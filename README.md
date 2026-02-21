@@ -1,2 +1,0 @@
-# lexscale
-LexScale complete project.

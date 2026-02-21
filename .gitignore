@@ -1,0 +1,42 @@
+# Dependencies
+node_modules/
+
+# Build / output
+dist/
+build/
+*.tsbuildinfo
+
+# Env and secrets
+.env
+.env.local
+.env.*.local
+
+# Python (backend/)
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.pyo
+.Python
+*.so
+.eggs/
+*.egg-info/
+*.egg
+
+# IDE / OS
+.DS_Store
+.idea/
+.vscode/
+*.log
+*.swp
+*.swo
+
+# Vite
+.vite/
+
+# Uploads / runtime
+backend/storage/uploads/
+
+# Optional
+coverage/
+.nyc_output/
