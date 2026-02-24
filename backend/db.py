@@ -1,4 +1,5 @@
 import os
+import re
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -15,11 +16,27 @@ if not DATABASE_URL:
         "DATABASE_URL nao configurada. Defina em backend/.env para conectar no Postgres.",
     )
 
-# For URLs like "postgresql://..." SQLAlchemy defaults to the psycopg2 driver.
-# We only install psycopg (psycopg3), so we normalize the URL to explicitly
-# use the psycopg dialect instead of requiring psycopg2.
-if DATABASE_URL.startswith("postgresql://") and "+psycopg" not in DATABASE_URL:
-    DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+psycopg://", 1)
+# Some providers (and templates) expose DATABASE_URL using placeholders like
+# "postgres://${PGUSER}:${PGPASSWORD}@${PGHOST}:${PGPORT}/${PGDATABASE}".
+# SQLAlchemy cannot parse that string directly, so we expand ${VAR} using
+# the current process environment.
+def _expand_env_placeholders(value: str) -> str:
+    pattern = re.compile(r"\$\{([^}]+)\}")
+
+    def _replace(match: re.Match[str]) -> str:
+        var_name = match.group(1)
+        return os.getenv(var_name, match.group(0))
+
+    return pattern.sub(_replace, value)
+
+
+DATABASE_URL = _expand_env_placeholders(DATABASE_URL)
+
+# Normalize Postgres URLs so SQLAlchemy recognizes the dialect correctly.
+# Some providers use the shorthand "postgres://", which SQLAlchemy treats
+# as an unknown dialect ("postgres"). We rewrite it to "postgresql://".
+if DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)
