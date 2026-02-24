@@ -12,7 +12,8 @@ from docx import Document
 
 from backend.schemas.cases import CaseExtractionPayload, CaseScoresPayload, DeadlinePayload
 
-PROCESS_NUMBER_REGEX = r"\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4}"
+PROCESS_NUMBER_REGEX = r"\d{7}\s*-\s*\d{2}\.\d{4}\.\d\.\d{2}\.\d{4}"
+NUP_NUMBER_REGEX = r"\d{5}\.\d{6}/\d{4}-\d{2}"
 
 
 def ensure_upload_dir() -> Path:
@@ -131,9 +132,14 @@ def fallback_extract_case_data(
     claim_value: Optional[float],
 ) -> CaseExtractionPayload:
     process_number_match = re.search(PROCESS_NUMBER_REGEX, text)
-    process_number_final = process_number or (process_number_match.group(0) if process_number_match else None)
+    nup_number_match = re.search(NUP_NUMBER_REGEX, text)
+    extracted_process = _normalize_process_number(process_number_match.group(0)) if process_number_match else None
+    extracted_nup = _normalize_nup_number(nup_number_match.group(0)) if nup_number_match else None
+    process_number_final = process_number or extracted_process or extracted_nup
 
     tribunal_match = tribunal or _search_first(text, [r"\bTJ[A-Z]{2}\b", r"\bTRT-?\d+\b", r"\bTRF-?\d+\b"])
+    if not tribunal_match:
+        tribunal_match = _infer_tribunal_from_reference(extracted_process, text)
     judge_match = judge or _search_first(text, [r"Ju[ií]z(?:a)?\s*[:\-]?\s*([A-Z][\w\s\.]+)"], group=1)
     action_type_final = action_type or _guess_action_type(text)
 
@@ -173,8 +179,10 @@ def _guess_action_type(text: str) -> str:
         return "Tributario"
     if "famil" in lowered:
         return "Familia"
-    if "empres" in lowered or "comercial" in lowered:
+    if any(term in lowered for term in ["falencia", "recuperacao judicial", "societar", "direito comercial"]):
         return "Comercial"
+    if any(term in lowered for term in ["cumprimento de decisao", "oficio", "procuradoria", "administrativo", "militar"]):
+        return "Civel"
     return "Civel"
 
 
@@ -200,6 +208,35 @@ def _extract_key_facts(text: str) -> List[str]:
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     facts = [line for line in lines[:6] if len(line) > 25]
     return facts[:3]
+
+
+def _normalize_process_number(value: str) -> str:
+    compact = re.sub(r"\s+", "", value or "")
+    return compact
+
+
+def _normalize_nup_number(value: str) -> str:
+    return re.sub(r"\s+", "", value or "")
+
+
+def _infer_tribunal_from_reference(process_number: Optional[str], text: str) -> Optional[str]:
+    if process_number:
+        normalized = process_number.replace(" ", "")
+        cnj_match = re.match(r"^\d{7}-\d{2}\.\d{4}\.(\d)\.(\d{2})\.\d{4}$", normalized)
+        if cnj_match:
+            ramo = cnj_match.group(1)
+            orgao = cnj_match.group(2)
+            if ramo == "4":
+                return f"TRF{int(orgao)}"
+            if ramo == "5":
+                return f"TRT{int(orgao)}"
+
+    lowered = text.lower()
+    region_match = re.search(r"(\d+)[ªa]\s+regi[aã]o", lowered)
+    if region_match and ("procuradoria-regional da uniao" in lowered or "trf" in lowered):
+        return f"TRF{int(region_match.group(1))}"
+
+    return None
 
 
 def _clamp(value: float, low: float, high: float) -> float:

@@ -27,6 +27,9 @@ import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ResponsiveContainer, RadarChart, PolarGrid, PolarAngleAxis, Radar, BarChart, Bar, XAxis, CartesianGrid, Tooltip } from "recharts";
 import { useToast } from "@/hooks/use-toast";
+import { buildInitials, fetchMe, isUnauthorizedError, logout } from "@/lib/auth";
+import { mapNetworkError, parseApiErrorResponse } from "@/lib/http-errors";
+import { buildMockDashboardData } from "@/lib/mock-dashboard";
 import type { DashboardData, DashboardFilters, UploadCaseResponse } from "@/types/dashboard";
 
 const DEFAULT_FILTERS: DashboardFilters = {
@@ -58,13 +61,20 @@ function buildDashboardUrl(filters: DashboardFilters) {
   return `/api/dashboard?${params.toString()}`;
 }
 
-async function fetchDashboard(filters: DashboardFilters): Promise<DashboardData> {
-  const res = await fetch(buildDashboardUrl(filters), { credentials: "include" });
+async function parseJsonOrThrow<T>(res: Response): Promise<T> {
   if (!res.ok) {
-    const text = (await res.text()) || res.statusText;
-    throw new Error(`${res.status}: ${text}`);
+    throw await parseApiErrorResponse(res);
   }
-  return await res.json();
+  return (await res.json()) as T;
+}
+
+async function fetchDashboard(filters: DashboardFilters): Promise<DashboardData> {
+  try {
+    const res = await fetch(buildDashboardUrl(filters), { credentials: "include" });
+    return await parseJsonOrThrow<DashboardData>(res);
+  } catch (error) {
+    throw mapNetworkError(error, "Não foi possível carregar o dashboard agora. Tente novamente.");
+  }
 }
 
 export default function Dashboard() {
@@ -85,14 +95,38 @@ export default function Dashboard() {
     base_url: "",
     tribunal: "",
   });
-  const [, setLocation] = useLocation();
+  const [currentPath, setLocation] = useLocation();
+  const isDemoMode = currentPath === "/dashboard-demo";
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const [dismissedAlerts, setDismissedAlerts] = useState<string[]>([]);
 
+  const meQuery = useQuery({
+    queryKey: ["auth-me"],
+    queryFn: fetchMe,
+    enabled: !isDemoMode,
+    retry: false,
+  });
+
   const dashboardQuery = useQuery({
-    queryKey: ["dashboard-data", appliedFilters],
-    queryFn: () => fetchDashboard(appliedFilters),
+    queryKey: ["dashboard-data", isDemoMode ? "demo" : "live", appliedFilters],
+    queryFn: () => (isDemoMode ? Promise.resolve(buildMockDashboardData(appliedFilters)) : fetchDashboard(appliedFilters)),
+    enabled: isDemoMode || meQuery.isSuccess,
+    retry: false,
+  });
+
+  const logoutMutation = useMutation({
+    mutationFn: logout,
+    onSuccess: () => {
+      queryClient.clear();
+      setLocation("/auth?tab=login");
+    },
+    onError: (error) => {
+      toast({
+        title: "Falha ao encerrar sessao",
+        description: error instanceof Error ? error.message : "Erro desconhecido",
+      });
+    },
   });
 
   const uploadMutation = useMutation({
@@ -108,24 +142,42 @@ export default function Dashboard() {
       if (uploadForm.action_type.trim()) formData.append("action_type", uploadForm.action_type.trim());
       if (uploadForm.claim_value.trim()) formData.append("claim_value", uploadForm.claim_value.trim());
 
-      const res = await fetch("/api/cases/upload", {
-        method: "POST",
-        body: formData,
-        credentials: "include",
-      });
-      if (!res.ok) {
-        const text = (await res.text()) || res.statusText;
-        throw new Error(`${res.status}: ${text}`);
+      try {
+        const res = await fetch("/api/cases/upload", {
+          method: "POST",
+          body: formData,
+          credentials: "include",
+        });
+        return await parseJsonOrThrow<UploadCaseResponse>(res);
+      } catch (error) {
+        throw mapNetworkError(error, "Não foi possível enviar este processo. Tente novamente.");
       }
-      return await res.json();
     },
     onSuccess: (payload) => {
+      const extracted = payload.extracted || {};
+      const extractedProcess = extracted.process_number || payload.process_number || "";
+      const rawClaimValue = (extracted as { claim_value?: unknown }).claim_value;
+      let extractedClaimValue = "";
+      if (typeof rawClaimValue === "number" && Number.isFinite(rawClaimValue)) {
+        extractedClaimValue = String(rawClaimValue);
+      } else if (typeof rawClaimValue === "string" && rawClaimValue.trim()) {
+        extractedClaimValue = rawClaimValue.trim();
+      }
+
       toast({
         title: "Processo enviado",
-        description: `Processo ${payload.process_number} processado com sucesso.`,
+        description: extractedProcess
+          ? `Processo ${extractedProcess} processado com sucesso.`
+          : "Documento processado com sucesso.",
       });
       setUploadFile(null);
-      setUploadForm({ process_number: "", tribunal: "", judge: "", action_type: "", claim_value: "" });
+      setUploadForm((previous) => ({
+        process_number: extractedProcess || previous.process_number,
+        tribunal: extracted.tribunal || previous.tribunal,
+        judge: extracted.judge || previous.judge,
+        action_type: extracted.action_type || previous.action_type,
+        claim_value: extractedClaimValue || previous.claim_value,
+      }));
       queryClient.invalidateQueries({ queryKey: ["dashboard-data"] });
     },
     onError: (error) => {
@@ -138,15 +190,15 @@ export default function Dashboard() {
 
   const syncMutation = useMutation({
     mutationFn: async () => {
-      const res = await fetch("/api/public-data/sync", {
-        method: "POST",
-        credentials: "include",
-      });
-      if (!res.ok) {
-        const text = (await res.text()) || res.statusText;
-        throw new Error(`${res.status}: ${text}`);
+      try {
+        const res = await fetch("/api/public-data/sync", {
+          method: "POST",
+          credentials: "include",
+        });
+        return await parseJsonOrThrow<Record<string, unknown>>(res);
+      } catch (error) {
+        throw mapNetworkError(error, "Não foi possível sincronizar as APIs públicas agora.");
       }
-      return await res.json();
     },
     onSuccess: () => {
       toast({
@@ -168,23 +220,23 @@ export default function Dashboard() {
       if (!sourceForm.name.trim() || !sourceForm.base_url.trim()) {
         throw new Error("Informe nome e URL da fonte publica.");
       }
-      const res = await fetch("/api/public-data/sources", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({
-          name: sourceForm.name.trim(),
-          base_url: sourceForm.base_url.trim(),
-          tribunal: sourceForm.tribunal.trim() || null,
-          headers: {},
-          enabled: true,
-        }),
-      });
-      if (!res.ok) {
-        const text = (await res.text()) || res.statusText;
-        throw new Error(`${res.status}: ${text}`);
+      try {
+        const res = await fetch("/api/public-data/sources", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({
+            name: sourceForm.name.trim(),
+            base_url: sourceForm.base_url.trim(),
+            tribunal: sourceForm.tribunal.trim() || null,
+            headers: {},
+            enabled: true,
+          }),
+        });
+        return await parseJsonOrThrow<Record<string, unknown>>(res);
+      } catch (error) {
+        throw mapNetworkError(error, "Não foi possível cadastrar a fonte pública agora.");
       }
-      return await res.json();
     },
     onSuccess: () => {
       toast({
@@ -206,26 +258,29 @@ export default function Dashboard() {
       if (!dashboardData) {
         throw new Error("Dashboard ainda nao carregou.");
       }
+      if (isDemoMode) {
+        return "Demo: priorize peticoes objetivas, antecipe proposta de acordo e monitore prazos criticos em ate 48h.";
+      }
       const summary = dashboardData.visao_geral.stats
         .map((item) => `${item.title}: ${item.value} (${item.subtitle})`)
         .join("; ");
-      const res = await fetch("/api/ai/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({
-          prompt: `Com base nestes dados do dashboard juridico, gere 3 recomendacoes praticas e objetivas para o advogado: ${summary}`,
-          system_prompt: "Voce e um especialista juridico estrategico no Brasil. Responda de forma objetiva.",
-          temperature: 0.2,
-          max_output_tokens: 500,
-        }),
-      });
-      if (!res.ok) {
-        const text = (await res.text()) || res.statusText;
-        throw new Error(`${res.status}: ${text}`);
+      try {
+        const res = await fetch("/api/ai/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({
+            prompt: `Com base nestes dados do dashboard juridico, gere 3 recomendacoes praticas e objetivas para o advogado: ${summary}`,
+            system_prompt: "Voce e um especialista juridico estrategico no Brasil. Responda de forma objetiva.",
+            temperature: 0.2,
+            max_output_tokens: 500,
+          }),
+        });
+        const payload = await parseJsonOrThrow<{ text: string }>(res);
+        return payload.text;
+      } catch (error) {
+        throw mapNetworkError(error, "Não foi possível gerar recomendações agora.");
       }
-      const payload = await res.json();
-      return payload.text as string;
     },
     onSuccess: (text) => {
       toast({
@@ -252,6 +307,46 @@ export default function Dashboard() {
   useEffect(() => {
     setDismissedAlerts([]);
   }, [dashboardData?.generated_at]);
+
+  useEffect(() => {
+    if (isDemoMode) {
+      return;
+    }
+    if (!meQuery.error) {
+      return;
+    }
+    if (isUnauthorizedError(meQuery.error)) {
+      setLocation("/auth?tab=login");
+      return;
+    }
+    toast({
+      title: "Falha ao carregar sessao",
+      description: meQuery.error instanceof Error ? meQuery.error.message : "Erro desconhecido",
+    });
+  }, [isDemoMode, meQuery.error, setLocation, toast]);
+
+  useEffect(() => {
+    if (isDemoMode) {
+      return;
+    }
+    if (!dashboardQuery.error) {
+      return;
+    }
+    if (isUnauthorizedError(dashboardQuery.error)) {
+      setLocation("/auth?tab=login");
+    }
+  }, [dashboardQuery.error, isDemoMode, setLocation]);
+
+  const userInitials = useMemo(() => {
+    if (isDemoMode) {
+      return "DM";
+    }
+    if (!meQuery.data?.full_name) {
+      return "US";
+    }
+    return buildInitials(meQuery.data.full_name);
+  }, [isDemoMode, meQuery.data?.full_name]);
+
   const radarData = useMemo(
     () =>
       (dashboardData?.visao_geral.radar || []).map((item) => ({
@@ -261,6 +356,14 @@ export default function Dashboard() {
       })),
     [dashboardData],
   );
+
+  if (!isDemoMode && meQuery.isLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-950 text-slate-300">
+        Carregando sessao...
+      </div>
+    );
+  }
 
   const getAlertKey = (item: { type: string; title: string; time: string }) => `${item.type}::${item.title}::${item.time}`;
 
@@ -328,14 +431,46 @@ export default function Dashboard() {
             </span>
             {dashboardData?.updated_label || "Atualizando..."}
           </div>
-          <Button variant="ghost" size="icon" className="rounded-full" onClick={() => setLocation("/auth")}>
-            <div className="w-8 h-8 bg-blue-600 text-white rounded-full flex items-center justify-center font-bold text-sm">AD</div>
-          </Button>
+          {isDemoMode ? (
+            <>
+              <span className="rounded-full border border-cyan-400/35 bg-cyan-500/15 px-3 py-1 text-[10px] font-bold uppercase tracking-[0.16em] text-cyan-200">
+                Modo Demo
+              </span>
+              <Button variant="outline" size="sm" className="border-slate-700 bg-slate-900/60 text-slate-200 hover:bg-slate-800" onClick={() => setLocation("/auth?tab=login")}>
+                Fazer Login
+              </Button>
+            </>
+          ) : (
+            <>
+              <Button variant="outline" size="sm" className="border-slate-700 bg-slate-900/60 text-slate-200 hover:bg-slate-800" onClick={() => setLocation("/profile")}>
+                Perfil
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                className="border-slate-700 bg-slate-900/60 text-slate-200 hover:bg-slate-800"
+                onClick={() => logoutMutation.mutate()}
+                disabled={logoutMutation.isPending}
+              >
+                {logoutMutation.isPending ? "Saindo..." : "Sair"}
+              </Button>
+              <Button variant="ghost" size="icon" className="rounded-full" onClick={() => setLocation("/profile")}>
+                <div className="w-8 h-8 bg-blue-600 text-white rounded-full flex items-center justify-center font-bold text-sm">{userInitials}</div>
+              </Button>
+            </>
+          )}
         </div>
       </header>
 
       <main className={`flex-1 p-6 max-w-[1400px] mx-auto w-full transition-opacity duration-300 ${isFiltering ? "opacity-50 pointer-events-none" : "opacity-100"}`}>
-        <section className={`${PANEL_CLASS} p-4 mb-6`}>
+        {isDemoMode ? (
+          <section className={`${PANEL_SOFT_CLASS} p-4 mb-6`}>
+            <p className="text-sm text-slate-300">
+              Dashboard de demonstracao com dados ficticios. Recursos de upload e integracoes externas estao disponiveis apenas para contas autenticadas.
+            </p>
+          </section>
+        ) : (
+          <section className={`${PANEL_CLASS} p-4 mb-6`}>
           <div className="flex items-center justify-between gap-4 mb-4">
             <h3 className="font-bold text-slate-100 flex items-center gap-2">
               <Upload size={18} className="text-cyan-300" />
@@ -391,7 +526,8 @@ export default function Dashboard() {
               </div>
             </div>
           </div>
-        </section>
+          </section>
+        )}
 
         <div className={`${PANEL_SOFT_CLASS} p-4 flex flex-wrap gap-4 items-end mb-8`}>
           <FilterSelect
@@ -446,7 +582,7 @@ export default function Dashboard() {
                 data={dashboardData}
                 radarData={radarData}
                 onGenerateRecommendations={() => recommendationMutation.mutate()}
-                generatingRecommendations={recommendationMutation.isPending}
+                generatingRecommendations={!isDemoMode && recommendationMutation.isPending}
               />
             )}
             {activeTab === "inteligencia" && <InteligenciaView data={dashboardData} />}

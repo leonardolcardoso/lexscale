@@ -6,11 +6,24 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { ArrowRight, Bot, CheckCircle2, Scale, Shield } from "lucide-react";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { useToast } from "@/hooks/use-toast";
+import { login, register } from "@/lib/auth";
+import { cn } from "@/lib/utils";
 
 export default function AuthPage() {
   const [location, setLocation] = useLocation();
   const [isLoading, setIsLoading] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [loginForm, setLoginForm] = useState({ email: "", password: "" });
+  const [registerForm, setRegisterForm] = useState({
+    first_name: "",
+    last_name: "",
+    email: "",
+    password: "",
+  });
+  const { toast } = useToast();
+
   const queryTab = useMemo<"login" | "register">(() => {
     const url = typeof window !== "undefined" ? new URLSearchParams(window.location.search) : null;
     const value = url?.get("tab");
@@ -22,6 +35,21 @@ export default function AuthPage() {
     setActiveTab(queryTab);
   }, [queryTab]);
 
+  useEffect(() => {
+    let mounted = true;
+    const checkAuth = async () => {
+      const res = await fetch("/api/auth/me", { credentials: "include" });
+      if (!mounted) return;
+      if (res.ok) {
+        setLocation("/dashboard");
+      }
+    };
+    checkAuth().catch(() => undefined);
+    return () => {
+      mounted = false;
+    };
+  }, [setLocation]);
+
   const openSupportEmail = () => {
     window.location.href = "mailto:contato@lexscale.ai?subject=Suporte%20LexScale";
   };
@@ -31,18 +59,43 @@ export default function AuthPage() {
       "mailto:contato@lexscale.ai?subject=Recupera%C3%A7%C3%A3o%20de%20senha&body=Ol%C3%A1%2C%20preciso%20redefinir%20minha%20senha.";
   };
 
-  const handleAuth = (e: React.FormEvent) => {
+  const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsLoading(true);
-
-    setTimeout(() => {
-      setIsLoading(false);
+    setErrorMessage(null);
+    try {
+      await login(loginForm);
+      toast({ title: "Login realizado", description: "Redirecionando para o dashboard." });
       setLocation("/dashboard");
-    }, 1000);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Erro ao autenticar.";
+      setErrorMessage(message);
+      toast({ title: "Falha no login", description: message });
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleRegister = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsLoading(true);
+    setErrorMessage(null);
+    try {
+      await register(registerForm);
+      toast({ title: "Conta criada", description: "Bem-vindo(a) ao LexScale." });
+      setLocation("/dashboard");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Erro ao criar conta.";
+      setErrorMessage(message);
+      toast({ title: "Falha no cadastro", description: message });
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const handleTabChange = (value: "login" | "register") => {
     setActiveTab(value);
+    setErrorMessage(null);
     setLocation(`/auth?tab=${value}`);
   };
 
@@ -82,7 +135,7 @@ export default function AuthPage() {
           </div>
         </section>
 
-        <section className="flex items-center justify-center p-6 md:p-10">
+        <section className="flex items-start justify-center p-6 pt-10 md:p-10 md:pt-12">
           <div className="w-full max-w-lg space-y-8">
             <div className="flex items-center justify-center gap-2 text-white lg:hidden">
               <Scale className="h-8 w-8 text-blue-300" />
@@ -97,82 +150,161 @@ export default function AuthPage() {
                 </CardDescription>
               </CardHeader>
 
-              <CardContent>
+              <CardContent className="space-y-4">
                 <Tabs value={activeTab} onValueChange={(value) => handleTabChange(value as "login" | "register")} className="w-full">
-                  <TabsList className="mb-8 grid w-full grid-cols-2 rounded-xl bg-slate-800 p-1">
-                    <TabsTrigger value="login" className="rounded-lg font-bold">
+                  <TabsList className="mb-5 grid w-full grid-cols-2 rounded-xl bg-slate-800 p-1.5">
+                    <TabsTrigger value="login" className="rounded-lg font-bold data-[state=active]:bg-slate-950">
                       Login
                     </TabsTrigger>
-                    <TabsTrigger value="register" className="rounded-lg font-bold">
+                    <TabsTrigger value="register" className="rounded-lg font-bold data-[state=active]:bg-slate-950">
                       Cadastro
                     </TabsTrigger>
                   </TabsList>
 
-                  <TabsContent value="login">
-                    <form onSubmit={handleAuth} className="space-y-4">
-                      <div className="space-y-2">
-                        <Label htmlFor="email" className="text-slate-200">E-mail corporativo</Label>
-                        <Input id="email" type="email" placeholder="nome@empresa.com.br" required className="h-11 border-slate-700 bg-slate-950/60 text-slate-100 placeholder:text-slate-500" />
+                  <div className="mb-2 min-h-10">
+                    {errorMessage ? <p className="rounded-md border border-red-500/40 bg-red-500/10 p-3 text-xs text-red-300">{errorMessage}</p> : null}
+                  </div>
+
+                  <div className="relative h-[350px] overflow-hidden sm:h-[370px]">
+                    <form
+                      onSubmit={handleLogin}
+                      className={cn(
+                        "absolute inset-0 space-y-4 transition-all duration-300 ease-out",
+                        activeTab === "login"
+                          ? "visible translate-y-0 opacity-100"
+                          : "pointer-events-none invisible translate-y-2 opacity-0",
+                      )}
+                      aria-hidden={activeTab !== "login"}
+                    >
+                      <div className="space-y-2.5">
+                        <div className="flex items-center justify-between">
+                          <Label htmlFor="email" className="text-slate-200">E-mail corporativo</Label>
+                          <span className="select-none text-xs font-semibold text-transparent">Esqueceu a senha?</span>
+                        </div>
+                        <Input
+                          id="email"
+                          type="email"
+                          placeholder="nome@empresa.com.br"
+                          required
+                          value={loginForm.email}
+                          onChange={(event) => setLoginForm((prev) => ({ ...prev, email: event.target.value }))}
+                          className="h-11 border-slate-700 bg-slate-950/60 text-slate-100 placeholder:text-slate-500"
+                        />
                       </div>
 
-                      <div className="space-y-2">
+                      <div className="space-y-2.5">
                         <div className="flex items-center justify-between">
                           <Label htmlFor="password" className="text-slate-200">Senha</Label>
                           <Button variant="link" type="button" onClick={openResetPasswordEmail} className="h-auto p-0 text-xs font-semibold text-blue-600">
                             Esqueceu a senha?
                           </Button>
                         </div>
-                        <Input id="password" type="password" required className="h-11 border-slate-700 bg-slate-950/60 text-slate-100" />
+                        <Input
+                          id="password"
+                          type="password"
+                          required
+                          value={loginForm.password}
+                          onChange={(event) => setLoginForm((prev) => ({ ...prev, password: event.target.value }))}
+                          className="h-11 border-slate-700 bg-slate-950/60 text-slate-100"
+                        />
                       </div>
 
                       <Button type="submit" className="h-11 w-full rounded-xl bg-blue-600 font-bold hover:bg-blue-700" disabled={isLoading}>
                         {isLoading ? "Acessando..." : "Entrar na Plataforma"}
                         {!isLoading ? <ArrowRight className="ml-2 h-4 w-4" /> : null}
                       </Button>
+
+                      <div className="rounded-xl border border-slate-700/70 bg-slate-950/30 p-3 text-center text-xs text-slate-400">
+                        Ambiente seguro com sessão protegida e criptografia de credenciais.
+                      </div>
                     </form>
-                  </TabsContent>
 
-                  <TabsContent value="register">
-                    <form onSubmit={handleAuth} className="space-y-4">
+                    <form
+                      onSubmit={handleRegister}
+                      className={cn(
+                        "absolute inset-0 space-y-4 transition-all duration-300 ease-out",
+                        activeTab === "register"
+                          ? "visible translate-y-0 opacity-100"
+                          : "pointer-events-none invisible translate-y-2 opacity-0",
+                      )}
+                      aria-hidden={activeTab !== "register"}
+                    >
                       <div className="grid grid-cols-2 gap-4">
-                        <div className="space-y-2">
+                        <div className="space-y-2.5">
                           <Label htmlFor="first-name" className="text-slate-200">Nome</Label>
-                          <Input id="first-name" placeholder="João" required className="h-11 border-slate-700 bg-slate-950/60 text-slate-100 placeholder:text-slate-500" />
+                          <Input
+                            id="first-name"
+                            placeholder="João"
+                            required
+                            value={registerForm.first_name}
+                            onChange={(event) => setRegisterForm((prev) => ({ ...prev, first_name: event.target.value }))}
+                            className="h-11 border-slate-700 bg-slate-950/60 text-slate-100 placeholder:text-slate-500"
+                          />
                         </div>
-                        <div className="space-y-2">
+                        <div className="space-y-2.5">
                           <Label htmlFor="last-name" className="text-slate-200">Sobrenome</Label>
-                          <Input id="last-name" placeholder="Silva" required className="h-11 border-slate-700 bg-slate-950/60 text-slate-100 placeholder:text-slate-500" />
+                          <Input
+                            id="last-name"
+                            placeholder="Silva"
+                            required
+                            value={registerForm.last_name}
+                            onChange={(event) => setRegisterForm((prev) => ({ ...prev, last_name: event.target.value }))}
+                            className="h-11 border-slate-700 bg-slate-950/60 text-slate-100 placeholder:text-slate-500"
+                          />
                         </div>
                       </div>
 
-                      <div className="space-y-2">
+                      <div className="space-y-2.5">
                         <Label htmlFor="reg-email" className="text-slate-200">E-mail corporativo</Label>
-                        <Input id="reg-email" type="email" placeholder="nome@empresa.com.br" required className="h-11 border-slate-700 bg-slate-950/60 text-slate-100 placeholder:text-slate-500" />
+                        <Input
+                          id="reg-email"
+                          type="email"
+                          placeholder="nome@empresa.com.br"
+                          required
+                          value={registerForm.email}
+                          onChange={(event) => setRegisterForm((prev) => ({ ...prev, email: event.target.value }))}
+                          className="h-11 border-slate-700 bg-slate-950/60 text-slate-100 placeholder:text-slate-500"
+                        />
                       </div>
 
-                      <div className="space-y-2">
+                      <div className="space-y-2.5">
                         <Label htmlFor="reg-password" className="text-slate-200">Crie uma senha</Label>
-                        <Input id="reg-password" type="password" required className="h-11 border-slate-700 bg-slate-950/60 text-slate-100" />
+                        <Input
+                          id="reg-password"
+                          type="password"
+                          required
+                          minLength={8}
+                          value={registerForm.password}
+                          onChange={(event) => setRegisterForm((prev) => ({ ...prev, password: event.target.value }))}
+                          className="h-11 border-slate-700 bg-slate-950/60 text-slate-100"
+                        />
                       </div>
 
                       <Button type="submit" className="h-11 w-full rounded-xl bg-blue-600 font-bold hover:bg-blue-700" disabled={isLoading}>
                         {isLoading ? "Criando conta..." : "Criar Minha Conta"}
                         {!isLoading ? <ArrowRight className="ml-2 h-4 w-4" /> : null}
                       </Button>
-
-                      <p className="mt-4 text-center text-[10px] leading-relaxed text-slate-400">
-                        Ao se cadastrar, você concorda com nossos{" "}
-                        <Link href="/termos" className="cursor-pointer underline">
-                          Termos de Uso
-                        </Link>{" "}
-                        e{" "}
-                        <Link href="/privacidade" className="cursor-pointer underline">
-                          Política de Privacidade
-                        </Link>
-                        .
-                      </p>
                     </form>
-                  </TabsContent>
+                  </div>
+
+                  <div className="min-h-[36px]">
+                    <p
+                      className={cn(
+                        "text-center text-[11px] leading-relaxed text-slate-400 transition-opacity duration-300",
+                        activeTab === "register" ? "opacity-100" : "opacity-0",
+                      )}
+                    >
+                      Ao se cadastrar, você concorda com nossos{" "}
+                      <Link href="/termos" className="cursor-pointer underline">
+                        Termos de Uso
+                      </Link>{" "}
+                      e{" "}
+                      <Link href="/privacidade" className="cursor-pointer underline">
+                        Política de Privacidade
+                      </Link>
+                      .
+                    </p>
+                  </div>
                 </Tabs>
               </CardContent>
             </Card>

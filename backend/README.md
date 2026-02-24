@@ -40,6 +40,12 @@ npm run dev:backend
 ## Endpoints
 
 - `GET /health`
+- `POST /api/auth/register`
+- `POST /api/auth/login`
+- `POST /api/auth/logout`
+- `GET /api/auth/me`
+- `GET /api/profile`
+- `PUT /api/profile`
 - `GET /api/dashboard`
 - `GET /api/cases`
 - `POST /api/cases/upload`
@@ -50,6 +56,8 @@ npm run dev:backend
 - `POST /api/ai/chat`
 - `GET /api/ai/history`
 - `POST /api/ai/search`
+
+Observacao: todos os endpoints `/api/*` (exceto login/registro) exigem sessao autenticada via cookie HTTP-only.
 
 Inventario completo dos dados do dashboard:
 - `/Users/pedrobrugger/Projects/lexScale/repos/lexscale/docs/dashboard-data-inventory.md`
@@ -109,3 +117,28 @@ Exemplo de ingestao manual de registros:
   ]
 }
 ```
+
+## Deploy no Railway
+
+Deploy recomendado: **1 servico Docker** (FastAPI + frontend buildado).
+
+1. Crie um projeto no Railway e conecte este repo.
+2. Adicione um banco Postgres no Railway.
+3. Configure as variaveis de ambiente:
+   - `DATABASE_URL` (do Postgres do Railway)
+   - `OPENAI_API_KEY`
+   - `OPENAI_MODEL` (opcional)
+   - `OPENAI_EMBEDDING_MODEL` (opcional)
+   - `OPENAI_EMBEDDING_DIMENSIONS` (opcional, default `1536`)
+   - `SESSION_COOKIE_SECURE=true`
+   - `SESSION_COOKIE_SAMESITE=lax`
+   - `SESSION_TTL_HOURS=168` (opcional)
+   - `AUTH_COOKIE_NAME=lexscale_session` (opcional)
+4. O Railway vai buildar via `Dockerfile` e iniciar com `uvicorn` em `PORT` automatico.
+
+Observacoes:
+- O backend agora serve o frontend buildado (`dist/public`) no mesmo dominio.
+- Se frontend e backend ficarem em dominios diferentes, ajuste:
+  - `SESSION_COOKIE_SAMESITE=none`
+  - `SESSION_COOKIE_SECURE=true`
+  - `CORS_ORIGINS` com a URL do frontend.

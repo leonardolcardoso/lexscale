@@ -379,7 +379,7 @@ export default function Home() {
             </span>
             <h2 className="mb-5 text-3xl font-extrabold lg:text-4xl">Dashboards Inteligentes</h2>
             <p className="mb-8 text-lg text-blue-100/80">Visualize métricas e insights em tempo real sobre seus documentos jurídicos</p>
-            <Link href="/dashboard">
+            <Link href="/dashboard-demo">
               <Button size="lg" className="h-12 rounded-full bg-blue-500 px-8 font-bold text-white hover:bg-blue-600">
                 <MonitorPlay className="mr-2 h-5 w-5" /> Entrar no Dashboard Completo
               </Button>

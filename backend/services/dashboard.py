@@ -2,6 +2,7 @@ from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from statistics import mean
 from typing import Dict, List, Optional, Sequence, Tuple
+from uuid import UUID
 
 from sqlalchemy.orm import Session
 
@@ -271,15 +272,30 @@ def _build_heatmap(records: List[PublicCaseRecord]) -> Tuple[List[str], List[Hea
 
 def build_dashboard_data(
     db: Session,
+    user_id: UUID,
     tribunal: str = "Todos os Tribunais",
     juiz: str = "Todos os Juizes",
     tipo_acao: str = "Todos os Tipos",
     faixa_valor: str = "Todos os Valores",
     periodo: str = "Ultimos 6 meses",
 ) -> DashboardData:
-    all_cases = db.query(ProcessCase).order_by(ProcessCase.created_at.desc()).all()
+    all_cases = (
+        db.query(ProcessCase)
+        .filter(ProcessCase.user_id == user_id)
+        .order_by(ProcessCase.created_at.desc())
+        .all()
+    )
     all_public = db.query(PublicCaseRecord).order_by(PublicCaseRecord.created_at.desc()).all()
-    all_deadlines = db.query(CaseDeadline).order_by(CaseDeadline.due_date.asc()).all()
+    case_ids = [item.id for item in all_cases]
+    if case_ids:
+        all_deadlines = (
+            db.query(CaseDeadline)
+            .filter(CaseDeadline.case_id.in_(case_ids))
+            .order_by(CaseDeadline.due_date.asc())
+            .all()
+        )
+    else:
+        all_deadlines = []
 
     filtered_cases = _filter_cases(all_cases, tribunal, juiz, tipo_acao, faixa_valor, periodo)
     filtered_public = _filter_public_records(all_public, tribunal, juiz, tipo_acao, faixa_valor, periodo)

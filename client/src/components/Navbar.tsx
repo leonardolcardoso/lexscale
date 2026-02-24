@@ -15,6 +15,22 @@ export function Navbar() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [location, setLocation] = useLocation();
 
+  const handleLogoClick = (event: MouseEvent<HTMLAnchorElement>) => {
+    event.preventDefault();
+    setMenuOpen(false);
+
+    if (location !== "/" && !location.startsWith("/#")) {
+      setLocation("/");
+      window.setTimeout(() => {
+        window.scrollTo({ top: 0, behavior: "smooth" });
+      }, 30);
+      return;
+    }
+
+    window.history.pushState(null, "", "/");
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+
   const handleNavClick = (event: MouseEvent<HTMLAnchorElement>, href: string) => {
     const hash = href.split("#")[1];
     if (!hash) return;
@@ -25,7 +41,7 @@ export function Navbar() {
       if (section) {
         section.scrollIntoView({ behavior: "smooth", block: "start" });
       }
-      window.history.replaceState(null, "", `/#${hash}`);
+      window.history.pushState(null, "", `/#${hash}`);
       setMenuOpen(false);
       return;
     }
@@ -39,7 +55,7 @@ export function Navbar() {
     <header className="sticky top-0 z-50 w-full bg-slate-950/95 px-3 pt-3 backdrop-blur-md md:px-6 md:pt-4">
       <div className="mx-auto max-w-7xl rounded-2xl border border-slate-800/85 bg-slate-950/80 backdrop-blur-xl shadow-[0_12px_35px_rgba(2,6,23,0.45)]">
         <div className="flex h-16 items-center justify-between px-4 md:h-20 md:px-6">
-          <Link href="/" className="flex items-center gap-2.5">
+          <Link href="/" onClick={handleLogoClick} className="flex items-center gap-2.5">
             <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-blue-700 via-blue-600 to-cyan-500 text-white shadow-lg shadow-blue-600/25">
               <Scale className="h-5 w-5" />
             </div>

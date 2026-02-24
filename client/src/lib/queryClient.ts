@@ -1,9 +1,9 @@
 import { QueryClient, QueryFunction } from "@tanstack/react-query";
+import { mapNetworkError, parseApiErrorResponse } from "@/lib/http-errors";
 
 async function throwIfResNotOk(res: Response) {
   if (!res.ok) {
-    const text = (await res.text()) || res.statusText;
-    throw new Error(`${res.status}: ${text}`);
+    throw await parseApiErrorResponse(res);
   }
 }
 
@@ -12,12 +12,17 @@ export async function apiRequest(
   url: string,
   data?: unknown | undefined,
 ): Promise<Response> {
-  const res = await fetch(url, {
-    method,
-    headers: data ? { "Content-Type": "application/json" } : {},
-    body: data ? JSON.stringify(data) : undefined,
-    credentials: "include",
-  });
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method,
+      headers: data ? { "Content-Type": "application/json" } : {},
+      body: data ? JSON.stringify(data) : undefined,
+      credentials: "include",
+    });
+  } catch (error) {
+    throw mapNetworkError(error, "Não foi possível concluir a operação. Tente novamente.");
+  }
 
   await throwIfResNotOk(res);
   return res;
@@ -29,9 +34,14 @@ export const getQueryFn: <T>(options: {
 }) => QueryFunction<T> =
   ({ on401: unauthorizedBehavior }) =>
   async ({ queryKey }) => {
-    const res = await fetch(queryKey.join("/") as string, {
-      credentials: "include",
-    });
+    let res: Response;
+    try {
+      res = await fetch(queryKey.join("/") as string, {
+        credentials: "include",
+      });
+    } catch (error) {
+      throw mapNetworkError(error, "Não foi possível carregar os dados agora. Tente novamente.");
+    }
 
     if (unauthorizedBehavior === "returnNull" && res.status === 401) {
       return null;
