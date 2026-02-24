@@ -15,6 +15,12 @@ if not DATABASE_URL:
         "DATABASE_URL nao configurada. Defina em backend/.env para conectar no Postgres.",
     )
 
+# For URLs like "postgresql://..." SQLAlchemy defaults to the psycopg2 driver.
+# We only install psycopg (psycopg3), so we normalize the URL to explicitly
+# use the psycopg dialect instead of requiring psycopg2.
+if DATABASE_URL.startswith("postgresql://") and "+psycopg" not in DATABASE_URL:
+    DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+psycopg://", 1)
+
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)
 
