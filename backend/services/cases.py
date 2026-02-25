@@ -1,19 +1,26 @@
 import json
+import logging
 import os
 import re
 import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+from unicodedata import normalize as unicode_normalize
+from uuid import UUID
 
 from openai import OpenAI
 from pypdf import PdfReader
 from docx import Document
+from sqlalchemy.orm import Session
 
 from backend.schemas.cases import CaseExtractionPayload, CaseScoresPayload, DeadlinePayload
+from backend.services.openai_usage import record_openai_usage
 
 PROCESS_NUMBER_REGEX = r"\d{7}\s*-\s*\d{2}\.\d{4}\.\d\.\d{2}\.\d{4}"
 NUP_NUMBER_REGEX = r"\d{5}\.\d{6}/\d{4}-\d{2}"
+MONEY_REGEX = r"R\$\s*\d+(?:[\.\s]\d{3})*(?:,\d{2})?"
+logger = logging.getLogger("backend.services.cases")
 
 
 def ensure_upload_dir() -> Path:
@@ -102,12 +109,138 @@ def _extract_first_json(raw: str) -> Dict[str, Any]:
 def _parse_brl_to_float(raw_value: str) -> Optional[float]:
     if not raw_value:
         return None
-    value = raw_value.replace("R$", "").replace(" ", "")
+    value = re.sub(r"[^\d,\.]", "", raw_value or "")
+    if not value:
+        return None
     value = value.replace(".", "").replace(",", ".")
     try:
         return float(value)
     except ValueError:
         return None
+
+
+def _normalize_text_for_match(value: str) -> str:
+    normalized = unicode_normalize("NFD", value or "")
+    return "".join(char for char in normalized if ord(char) < 128).lower()
+
+
+def _extract_cnj_reference(process_number: Optional[str]) -> Tuple[Optional[str], Optional[int]]:
+    if not process_number:
+        return None, None
+    compact = re.sub(r"\s+", "", process_number)
+    cnj_match = re.match(r"^\d{7}-\d{2}\.\d{4}\.(\d)\.(\d{2})\.\d{4}$", compact)
+    if not cnj_match:
+        return None, None
+    return cnj_match.group(1), int(cnj_match.group(2))
+
+
+def _normalize_tribunal_label(value: Optional[str]) -> Optional[str]:
+    if not value:
+        return None
+    compact = re.sub(r"\s+", "", value.upper())
+    regional_match = re.match(r"^(TRF|TRT)-?0?(\d{1,2})$", compact)
+    if regional_match:
+        return f"{regional_match.group(1)}{int(regional_match.group(2))}"
+    if re.match(r"^TJ[A-Z]{2,3}$", compact):
+        return compact
+    return value.strip()
+
+
+def _extract_tribunal_from_header(text: str) -> Optional[str]:
+    head = "\n".join(text.splitlines()[:140])
+    federal_match = re.search(r"Tribunal\s+Regional\s+Federal\s+da\s+(\d+)[ªa]\s+Regi[aã]o", head, flags=re.IGNORECASE)
+    if federal_match:
+        return f"TRF{int(federal_match.group(1))}"
+
+    trabalho_match = re.search(r"Tribunal\s+Regional\s+do\s+Trabalho\s+da\s+(\d+)[ªa]\s+Regi[aã]o", head, flags=re.IGNORECASE)
+    if trabalho_match:
+        return f"TRT{int(trabalho_match.group(1))}"
+
+    trf_match = re.search(r"\bTRF-?\s*(\d+)\b", head, flags=re.IGNORECASE)
+    if trf_match:
+        return f"TRF{int(trf_match.group(1))}"
+
+    trt_match = re.search(r"\bTRT-?\s*(\d+)\b", head, flags=re.IGNORECASE)
+    if trt_match:
+        return f"TRT{int(trt_match.group(1))}"
+
+    return None
+
+
+def _looks_like_person_name(candidate: str) -> bool:
+    if not candidate:
+        return False
+    cleaned = re.sub(r"\s+", " ", candidate).strip(" .,:;-")
+    if len(cleaned) < 6 or len(cleaned) > 120:
+        return False
+    if any(char.isdigit() for char in cleaned):
+        return False
+
+    tokens = re.findall(r"[A-Za-zÀ-ÿ]+", cleaned)
+    if len(tokens) < 2:
+        return False
+
+    blocked = {
+        "juizo",
+        "juiz",
+        "juiza",
+        "grau",
+        "origem",
+        "vara",
+        "tribunal",
+        "federal",
+        "substituto",
+        "instancia",
+        "processo",
+    }
+    lowered_tokens = [_normalize_text_for_match(token) for token in tokens]
+    if any(token in blocked for token in lowered_tokens):
+        return False
+
+    particles = {"de", "da", "do", "dos", "das", "e"}
+    meaningful = [token for token in lowered_tokens if token not in particles]
+    return len(meaningful) >= 2
+
+
+def _extract_judge_name(text: str) -> Optional[str]:
+    head = "\n".join(text.splitlines()[:220])
+    patterns = [
+        r"(?:Ju[ií]z(?:a)?|Magistrad[oa]|Relator(?:a)?|Desembargador(?:a)?(?:\s+Federal)?|Ministro(?:a)?)\s*[:\-]\s*([A-ZÀ-Ý][A-Za-zÀ-ÿ'.-]*(?:\s+(?:[A-ZÀ-Ý][A-Za-zÀ-ÿ'.-]*|de|da|do|dos|das|e)){1,8})",
+        r"Assinado\s+por\s*[:\-]\s*([A-ZÀ-Ý][A-Za-zÀ-ÿ'.-]*(?:\s+(?:[A-ZÀ-Ý][A-Za-zÀ-ÿ'.-]*|de|da|do|dos|das|e)){1,8})",
+    ]
+    for pattern in patterns:
+        for found in re.finditer(pattern, head, flags=re.IGNORECASE):
+            candidate = re.sub(r"\s+", " ", found.group(1)).strip(" .,:;-")
+            if _looks_like_person_name(candidate):
+                return candidate[:140]
+    return None
+
+
+def _extract_claim_value_heuristic(text: str) -> Optional[float]:
+    preferred_patterns = [
+        r"valor(?:\s+atualizado)?\s+da\s+causa.{0,160}?(R\$\s*[\d\.\,\s]+)",
+        r"causa.{0,80}?(R\$\s*[\d\.\,\s]+)",
+    ]
+    for pattern in preferred_patterns:
+        found = re.search(pattern, text, flags=re.IGNORECASE | re.DOTALL)
+        if not found:
+            continue
+        parsed = _parse_brl_to_float(found.group(1))
+        if parsed is not None:
+            return parsed
+
+    fallback_window = text[:35000]
+    for found in re.finditer(MONEY_REGEX, fallback_window):
+        parsed = _parse_brl_to_float(found.group(0))
+        if parsed is None:
+            continue
+        context = _normalize_text_for_match(fallback_window[max(0, found.start() - 80) : found.end() + 80])
+        if parsed < 10:
+            continue
+        if any(term in context for term in ["multa", "honorario", "custa", "diaria", "sucumb", "astreinte", "milhao", "bilhao"]):
+            continue
+        return parsed
+    return None
 
 
 def _extract_deadlines_heuristic(text: str) -> List[DeadlinePayload]:
@@ -131,34 +264,38 @@ def fallback_extract_case_data(
     action_type: Optional[str],
     claim_value: Optional[float],
 ) -> CaseExtractionPayload:
-    process_number_match = re.search(PROCESS_NUMBER_REGEX, text)
-    nup_number_match = re.search(NUP_NUMBER_REGEX, text)
+    search_window = text[:35000]
+    process_number_match = re.search(PROCESS_NUMBER_REGEX, search_window)
+    nup_number_match = re.search(NUP_NUMBER_REGEX, search_window)
     extracted_process = _normalize_process_number(process_number_match.group(0)) if process_number_match else None
     extracted_nup = _normalize_nup_number(nup_number_match.group(0)) if nup_number_match else None
     process_number_final = process_number or extracted_process or extracted_nup
 
-    tribunal_match = tribunal or _search_first(text, [r"\bTJ[A-Z]{2}\b", r"\bTRT-?\d+\b", r"\bTRF-?\d+\b"])
+    tribunal_match = tribunal or _infer_tribunal_from_reference(process_number_final, search_window)
     if not tribunal_match:
-        tribunal_match = _infer_tribunal_from_reference(extracted_process, text)
-    judge_match = judge or _search_first(text, [r"Ju[ií]z(?:a)?\s*[:\-]?\s*([A-Z][\w\s\.]+)"], group=1)
-    action_type_final = action_type or _guess_action_type(text)
+        tribunal_match = _extract_tribunal_from_header(search_window)
+    if not tribunal_match:
+        tribunal_match = _search_first(search_window, [r"\bTJ[A-Z]{2}\b", r"\bTRT-?\d+\b", r"\bTRF-?\d+\b"])
+    tribunal_match = _normalize_tribunal_label(tribunal_match)
+
+    judge_match = judge or _extract_judge_name(search_window)
+    action_type_final = action_type or _guess_action_type(search_window, process_number_final)
 
     claim_value_final = claim_value
     if claim_value_final is None:
-        money_match = re.search(r"R\$\s*[\d\.\,]+", text)
-        claim_value_final = _parse_brl_to_float(money_match.group(0)) if money_match else None
+        claim_value_final = _extract_claim_value_heuristic(text)
 
     return CaseExtractionPayload(
         process_number=process_number_final,
-        title=_guess_title(text),
+        title=_guess_title(search_window),
         tribunal=tribunal_match,
         judge=judge_match,
         action_type=action_type_final,
         claim_value=claim_value_final,
-        status=_guess_status(text),
+        status=_guess_status(search_window),
         parties={"author": None, "defendant": None},
-        key_facts=_extract_key_facts(text),
-        deadlines=_extract_deadlines_heuristic(text),
+        key_facts=_extract_key_facts(search_window),
+        deadlines=_extract_deadlines_heuristic(search_window),
     )
 
 
@@ -171,9 +308,15 @@ def _search_first(text: str, patterns: List[str], group: int = 0) -> Optional[st
     return None
 
 
-def _guess_action_type(text: str) -> str:
-    lowered = text.lower()
-    if "trabalh" in lowered:
+def _guess_action_type(text: str, process_number: Optional[str]) -> str:
+    ramo, _ = _extract_cnj_reference(process_number)
+    if ramo == "5":
+        return "Trabalhista"
+    if ramo == "4":
+        return "Cível"
+
+    lowered = _normalize_text_for_match(text)
+    if re.search(r"\bclt\b", lowered) or any(term in lowered for term in ["reclamacao trabalhista", "dissidio", "justica do trabalho", "vara do trabalho"]):
         return "Trabalhista"
     if "tribut" in lowered:
         return "Tributário"
@@ -187,13 +330,15 @@ def _guess_action_type(text: str) -> str:
 
 
 def _guess_status(text: str) -> str:
-    lowered = text.lower()
+    lowered = _normalize_text_for_match(text)
+    if re.search(r"homolog\w+\s+acordo", lowered):
+        return "acordo"
     if "sentenca" in lowered:
         return "sentenca"
+    if "recurso" in lowered or "apelacao" in lowered:
+        return "em_recurso"
     if "acordo" in lowered:
         return "acordo"
-    if "recurso" in lowered:
-        return "em_recurso"
     return "em_andamento"
 
 
@@ -220,23 +365,18 @@ def _normalize_nup_number(value: str) -> str:
 
 
 def _infer_tribunal_from_reference(process_number: Optional[str], text: str) -> Optional[str]:
-    if process_number:
-        normalized = process_number.replace(" ", "")
-        cnj_match = re.match(r"^\d{7}-\d{2}\.\d{4}\.(\d)\.(\d{2})\.\d{4}$", normalized)
-        if cnj_match:
-            ramo = cnj_match.group(1)
-            orgao = cnj_match.group(2)
-            if ramo == "4":
-                return f"TRF{int(orgao)}"
-            if ramo == "5":
-                return f"TRT{int(orgao)}"
+    ramo, orgao = _extract_cnj_reference(process_number)
+    if ramo == "4" and orgao is not None:
+        return f"TRF{orgao}"
+    if ramo == "5" and orgao is not None:
+        return f"TRT{orgao}"
 
     lowered = text.lower()
     region_match = re.search(r"(\d+)[ªa]\s+regi[aã]o", lowered)
     if region_match and ("procuradoria-regional da uniao" in lowered or "trf" in lowered):
         return f"TRF{int(region_match.group(1))}"
 
-    return None
+    return _extract_tribunal_from_header(text)
 
 
 def _clamp(value: float, low: float, high: float) -> float:
@@ -278,8 +418,12 @@ def analyze_case_with_ai(
     judge: Optional[str],
     action_type: Optional[str],
     claim_value: Optional[float],
+    db: Optional[Session] = None,
+    user_id: Optional[UUID] = None,
+    usage_operation: str = "cases.analyze_case_with_ai.responses",
 ) -> Tuple[CaseExtractionPayload, CaseScoresPayload]:
     truncated = text[:18000] if text else ""
+    model = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
     system_prompt = (
         "Você é um analista jurídico no Brasil. "
         "Extraia dados estruturados e retorne APENAS JSON válido."
@@ -308,13 +452,22 @@ def analyze_case_with_ai(
     )
 
     response = client.responses.create(
-        model=os.getenv("OPENAI_MODEL", "gpt-4.1-mini"),
+        model=model,
         input=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ],
         temperature=0.1,
         max_output_tokens=1400,
+    )
+    record_openai_usage(
+        db=db,
+        logger=logger,
+        operation=usage_operation,
+        model=model,
+        usage=getattr(response, "usage", None),
+        user_id=user_id,
+        context={"feature": "case_enrichment"},
     )
     raw = _extract_response_text(response)
     parsed = _extract_first_json(raw)
@@ -363,13 +516,28 @@ def analyze_case_with_ai(
     return extraction, scores
 
 
-def build_case_embedding(client: OpenAI, text: str) -> Optional[List[float]]:
+def build_case_embedding(
+    client: OpenAI,
+    text: str,
+    db: Optional[Session] = None,
+    user_id: Optional[UUID] = None,
+    usage_operation: str = "cases.build_case_embedding.embeddings",
+) -> Optional[List[float]]:
     snippet = text[:6000].strip()
     if not snippet:
         return None
     embedding_model = os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
     dimensions = int(os.getenv("OPENAI_EMBEDDING_DIMENSIONS", "1536"))
     response = client.embeddings.create(model=embedding_model, input=snippet, dimensions=dimensions)
+    record_openai_usage(
+        db=db,
+        logger=logger,
+        operation=usage_operation,
+        model=embedding_model,
+        usage=getattr(response, "usage", None),
+        user_id=user_id,
+        context={"feature": "case_embedding"},
+    )
     return response.data[0].embedding
 
 

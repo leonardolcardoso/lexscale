@@ -60,14 +60,14 @@ export function Navbar() {
           <Link
             href="/"
             onClick={handleLogoClick}
-            className="flex items-center gap-2.5 rounded-xl border border-slate-200/80 bg-slate-100/95 px-2.5 py-1.5 shadow-sm transition-colors dark:border-slate-700/80 dark:bg-slate-900/70"
+            className="brand-logo-chip flex items-center gap-2.5 rounded-xl px-2.5 py-1.5 shadow-sm transition-colors"
           >
             <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-blue-700 via-blue-600 to-cyan-500 text-white shadow-lg shadow-blue-600/25">
               <Scale className="h-5 w-5" />
             </div>
             <div>
-              <p className="text-xl font-extrabold tracking-tight text-slate-800 dark:text-slate-100">LexScale</p>
-              <p className="-mt-0.5 text-[11px] font-medium uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">IA Jurídica</p>
+              <p className="brand-logo-title text-xl font-extrabold tracking-tight">LexScale</p>
+              <p className="brand-logo-subtitle -mt-0.5 text-[11px] font-medium uppercase tracking-[0.18em]">IA Jurídica</p>
             </div>
           </Link>
 

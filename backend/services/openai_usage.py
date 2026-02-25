@@ -189,6 +189,7 @@ def record_openai_usage(
                     or 0.0,
                 )
         except Exception:  # noqa: BLE001
+            db.rollback()
             logger.exception("Falha ao persistir log de uso OpenAI (operation=%s, model=%s).", operation, model)
 
     logger.info(

@@ -75,6 +75,22 @@ class AIMessage(Base):
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), index=True)
 
 
+class AIUsageLog(Base):
+    __tablename__ = "ai_usage_logs"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), nullable=True, index=True)
+    operation = Column(String(120), nullable=False, index=True)
+    model = Column(String(120), nullable=False, index=True)
+    input_tokens = Column(Integer, nullable=False, default=0)
+    output_tokens = Column(Integer, nullable=False, default=0)
+    total_tokens = Column(Integer, nullable=False, default=0, index=True)
+    estimated_cost_usd = Column(Float, nullable=True)
+    raw_usage = Column(JSON, nullable=True)
+    context = Column(JSON, nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), index=True)
+
+
 class ProcessCase(Base):
     __tablename__ = "process_cases"
 
@@ -96,6 +112,10 @@ class ProcessCase(Base):
     complexity_score = Column(Float, nullable=True)
     case_embedding = Column(Vector(EMBEDDING_DIMENSIONS), nullable=True)
     ai_status = Column(Text, nullable=False, default="queued", index=True)
+    ai_stage = Column(Text, nullable=False, default="extraction", index=True)
+    ai_stage_label = Column(Text, nullable=True)
+    ai_progress_percent = Column(Integer, nullable=False, default=0)
+    ai_stage_updated_at = Column(DateTime(timezone=True), nullable=True)
     ai_attempts = Column(Integer, nullable=False, default=0)
     ai_last_error = Column(Text, nullable=True)
     ai_next_retry_at = Column(DateTime(timezone=True), nullable=True, index=True)

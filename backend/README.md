@@ -48,6 +48,7 @@ npm run dev:backend
 - `PUT /api/profile`
 - `GET /api/dashboard`
 - `GET /api/cases`
+- `POST /api/cases/extract`
 - `POST /api/cases/upload`
 - `GET /api/public-data/sources`
 - `POST /api/public-data/sources`
@@ -56,6 +57,8 @@ npm run dev:backend
 - `POST /api/ai/chat`
 - `GET /api/ai/history`
 - `POST /api/ai/search`
+- `GET /api/ai/usage/summary`
+- `GET /api/ai/usage/logs`
 - `GET /api/strategic-alerts`
 - `POST /api/strategic-alerts/scan`
 - `POST /api/strategic-alerts/{alert_id}/read`
@@ -91,6 +94,29 @@ Exemplo de body:
 }
 ```
 
+## Controle de uso OpenAI (tokens e custo estimado)
+
+Toda chamada OpenAI passa a gerar log no servidor com:
+- operacao (`operation`)
+- modelo (`model`)
+- tokens de entrada/saida/total
+- custo estimado em USD (`estimated_cost_usd`)
+- acumulado mensal global e por usuario
+
+Persistencia no banco:
+- tabela `ai_usage_logs`
+
+Endpoints para consulta autenticada:
+- `GET /api/ai/usage/summary?days=30` -> agregados por periodo
+- `GET /api/ai/usage/logs?limit=50` -> eventos individuais recentes
+
+Configuracao opcional de precificacao por ambiente (USD por 1M tokens):
+- `OPENAI_PRICING_GPT_4_1_MINI_INPUT_PER_1M`
+- `OPENAI_PRICING_GPT_4_1_MINI_OUTPUT_PER_1M`
+- `OPENAI_PRICING_TEXT_EMBEDDING_3_SMALL_INPUT_PER_1M`
+- `OPENAI_PRICING_DEFAULT_INPUT_PER_1M`
+- `OPENAI_PRICING_DEFAULT_OUTPUT_PER_1M`
+
 Exemplo de cadastro de fonte pública:
 
 ```json
@@ -108,10 +134,24 @@ Exemplo de cadastro de fonte pública:
 Na inicialização, o backend cadastra automaticamente:
 - `tjdft_jurisprudencia` -> `https://jurisdf.tjdft.jus.br/api/v1/pesquisa`
 - `trf5_transparencia_documentos` -> `https://api-transparencia.trf5.jus.br/api/v1/documento/tipo`
+- `dados_gov_br_catalogo_piloto` -> `https://dados.gov.br/dados/api/publico/conjuntos-dados` (criada desabilitada quando `DADOS_GOV_BR_API_KEY` não estiver definida)
 
 Controle da coleta TJDFT via ambiente:
 - `PUBLIC_SYNC_TJDFT_QUERY` (default: `direito civil`)
 - `PUBLIC_SYNC_TJDFT_PAGE_SIZE` (default: `40`)
+
+Conector piloto dados.gov.br (1 dataset por sincronização):
+- `DADOS_GOV_BR_API_KEY` (opcional, recomendado; header `chave-api-dados-abertos`)
+- `DADOS_GOV_BR_PILOT_QUERY` (default: `justica`)
+- `DADOS_GOV_BR_PAGE` (default: `1`)
+- `DADOS_GOV_BR_DATASET_ID` (opcional; força dataset específico)
+- `DADOS_GOV_BR_RESOURCE_ID` (opcional; força recurso específico do dataset)
+- `DADOS_GOV_BR_PILOT_MAX_ITEMS` (default: `50`; limite de linhas importadas do recurso piloto)
+
+Observações do conector piloto:
+- Se o dataset tiver recurso JSON/API ou CSV, o backend importa até `DADOS_GOV_BR_PILOT_MAX_ITEMS` linhas.
+- O backend sempre salva 1 registro de metadados do dataset (mesmo quando o recurso não puder ser importado).
+- Sem autenticação válida, o portal pode redirecionar para login e a sincronização retorna erro dessa fonte.
 
 Exemplo de ingestão manual de registros:
 

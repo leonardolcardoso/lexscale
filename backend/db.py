@@ -39,12 +39,19 @@ DATABASE_URL = _expand_env_placeholders(DATABASE_URL)
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
+
+def _is_truthy(value: str) -> bool:
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)
 
 
 def init_database() -> None:
     from backend.models import Base
+
+    allow_data_migrations = _is_truthy(os.getenv("DB_ALLOW_DATA_MIGRATIONS", "true"))
 
     with engine.begin() as connection:
         connection.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
@@ -64,6 +71,18 @@ def init_database() -> None:
                 text("ALTER TABLE IF EXISTS process_cases ADD COLUMN IF NOT EXISTS ai_status TEXT"),
             )
             connection.execute(
+                text("ALTER TABLE IF EXISTS process_cases ADD COLUMN IF NOT EXISTS ai_stage TEXT"),
+            )
+            connection.execute(
+                text("ALTER TABLE IF EXISTS process_cases ADD COLUMN IF NOT EXISTS ai_stage_label TEXT"),
+            )
+            connection.execute(
+                text("ALTER TABLE IF EXISTS process_cases ADD COLUMN IF NOT EXISTS ai_progress_percent INTEGER"),
+            )
+            connection.execute(
+                text("ALTER TABLE IF EXISTS process_cases ADD COLUMN IF NOT EXISTS ai_stage_updated_at TIMESTAMPTZ"),
+            )
+            connection.execute(
                 text("ALTER TABLE IF EXISTS process_cases ADD COLUMN IF NOT EXISTS ai_attempts INTEGER"),
             )
             connection.execute(
@@ -75,14 +94,24 @@ def init_database() -> None:
             connection.execute(
                 text("ALTER TABLE IF EXISTS process_cases ADD COLUMN IF NOT EXISTS ai_processed_at TIMESTAMPTZ"),
             )
-            connection.execute(
-                text("UPDATE process_cases SET ai_status = COALESCE(ai_status, 'queued')"),
-            )
-            connection.execute(
-                text("UPDATE process_cases SET ai_attempts = COALESCE(ai_attempts, 0)"),
-            )
+            if allow_data_migrations:
+                connection.execute(
+                    text("UPDATE process_cases SET ai_status = COALESCE(ai_status, 'queued')"),
+                )
+                connection.execute(
+                    text("UPDATE process_cases SET ai_stage = COALESCE(ai_stage, 'extraction')"),
+                )
+                connection.execute(
+                    text("UPDATE process_cases SET ai_progress_percent = COALESCE(ai_progress_percent, 0)"),
+                )
+                connection.execute(
+                    text("UPDATE process_cases SET ai_attempts = COALESCE(ai_attempts, 0)"),
+                )
             connection.execute(
                 text("CREATE INDEX IF NOT EXISTS ix_process_cases_ai_status ON process_cases (ai_status)"),
+            )
+            connection.execute(
+                text("CREATE INDEX IF NOT EXISTS ix_process_cases_ai_stage ON process_cases (ai_stage)"),
             )
             connection.execute(
                 text("CREATE INDEX IF NOT EXISTS ix_process_cases_ai_next_retry_at ON process_cases (ai_next_retry_at)"),

@@ -126,7 +126,56 @@ export type UploadCaseResponse = {
   } | null;
   ai_status: "queued" | "processing" | "completed" | "failed_retryable" | "failed" | "manual_review";
   ai_attempts: number;
+  ai_stage: "extraction" | "analysis_ai" | "cross_data" | "publication" | "completed" | "failed" | "queued" | string;
+  ai_stage_label?: string | null;
+  ai_progress_percent?: number | null;
+  ai_stage_updated_at?: string | null;
   ai_next_retry_at?: string | null;
   ai_last_error?: string | null;
   created_at: string;
+};
+
+export type CaseExtractionPreviewResponse = {
+  process_number: string;
+  extracted: UploadCaseResponse["extracted"];
+};
+
+export type CaseAIStatus = UploadCaseResponse["ai_status"];
+
+export type UserCaseListItem = {
+  case_id: string;
+  process_number: string;
+  tribunal?: string | null;
+  judge?: string | null;
+  action_type?: string | null;
+  claim_value?: number | null;
+  status?: string | null;
+  success_probability?: number | null;
+  settlement_probability?: number | null;
+  expected_decision_months?: number | null;
+  risk_score?: number | null;
+  complexity_score?: number | null;
+  ai_status: CaseAIStatus;
+  ai_attempts: number;
+  ai_stage?: UploadCaseResponse["ai_stage"];
+  ai_stage_label?: string | null;
+  ai_progress_percent?: number | null;
+  ai_stage_updated_at?: string | null;
+  ai_next_retry_at?: string | null;
+  ai_processed_at?: string | null;
+  ai_last_error?: string | null;
+  created_at: string;
+};
+
+export type CaseAIStatusResponse = {
+  case_id: string;
+  ai_status: CaseAIStatus;
+  ai_attempts: number;
+  ai_stage?: UploadCaseResponse["ai_stage"];
+  ai_stage_label?: string | null;
+  ai_progress_percent?: number | null;
+  ai_stage_updated_at?: string | null;
+  ai_next_retry_at?: string | null;
+  ai_processed_at?: string | null;
+  ai_last_error?: string | null;
 };

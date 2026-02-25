@@ -39,9 +39,18 @@ class UploadCaseResponse(BaseModel):
     scores: Optional[CaseScoresPayload] = None
     ai_status: str
     ai_attempts: int = 0
+    ai_stage: str = "extraction"
+    ai_stage_label: Optional[str] = None
+    ai_progress_percent: int = 0
+    ai_stage_updated_at: Optional[datetime] = None
     ai_next_retry_at: Optional[datetime] = None
     ai_last_error: Optional[str] = None
     created_at: datetime
+
+
+class CaseExtractionPreviewResponse(BaseModel):
+    process_number: str
+    extracted: CaseExtractionPayload
 
 
 class CaseListItem(BaseModel):
@@ -59,6 +68,10 @@ class CaseListItem(BaseModel):
     complexity_score: Optional[float] = None
     ai_status: str = "queued"
     ai_attempts: int = 0
+    ai_stage: str = "extraction"
+    ai_stage_label: Optional[str] = None
+    ai_progress_percent: int = 0
+    ai_stage_updated_at: Optional[datetime] = None
     ai_next_retry_at: Optional[datetime] = None
     ai_processed_at: Optional[datetime] = None
     ai_last_error: Optional[str] = None
@@ -69,6 +82,10 @@ class CaseAIStatusResponse(BaseModel):
     case_id: str
     ai_status: str
     ai_attempts: int = 0
+    ai_stage: str = "extraction"
+    ai_stage_label: Optional[str] = None
+    ai_progress_percent: int = 0
+    ai_stage_updated_at: Optional[datetime] = None
     ai_next_retry_at: Optional[datetime] = None
     ai_processed_at: Optional[datetime] = None
     ai_last_error: Optional[str] = None

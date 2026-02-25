@@ -224,6 +224,31 @@
   border-radius: 1.25rem;
 }
 
+.brand-logo-chip {
+  border: 1px solid rgba(56, 189, 248, 0.32);
+  background:
+    linear-gradient(125deg, rgba(15, 23, 42, 0.92), rgba(30, 41, 59, 0.9));
+  box-shadow:
+    inset 0 1px 0 rgba(148, 163, 184, 0.22),
+    0 8px 22px rgba(2, 6, 23, 0.34);
+}
+
+.brand-logo-chip:hover {
+  border-color: rgba(56, 189, 248, 0.52);
+}
+
+.brand-logo-icon {
+  color: #67e8f9;
+}
+
+.brand-logo-title {
+  color: #f8fafc;
+}
+
+.brand-logo-subtitle {
+  color: #94a3b8;
+}
+
 .pill-label {
   display: inline-flex;
   align-items: center;
@@ -470,6 +495,27 @@
   border-color: rgba(30, 64, 175, 0.28);
   background: linear-gradient(120deg, rgba(96, 165, 250, 0.24), rgba(45, 212, 191, 0.2));
   color: #0f172a;
+}
+
+.light .brand-logo-chip {
+  border-color: rgba(148, 163, 184, 0.44);
+  background:
+    linear-gradient(125deg, rgba(255, 255, 255, 0.95), rgba(241, 245, 249, 0.9));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.92),
+    0 8px 18px rgba(15, 23, 42, 0.16);
+}
+
+.light .brand-logo-icon {
+  color: #0284c7;
+}
+
+.light .brand-logo-title {
+  color: #0f172a;
+}
+
+.light .brand-logo-subtitle {
+  color: #475569;
 }
 
 .light .auth-page .auth-page-bg {

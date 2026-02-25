@@ -23,14 +23,22 @@ import {
   Upload,
   RefreshCcw,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ResponsiveContainer, RadarChart, PolarGrid, PolarAngleAxis, Radar, BarChart, Bar, XAxis, CartesianGrid, Tooltip } from "recharts";
 import { useToast } from "@/hooks/use-toast";
 import { buildInitials, fetchMe, isUnauthorizedError, logout } from "@/lib/auth";
 import { mapNetworkError, parseApiErrorResponse } from "@/lib/http-errors";
 import { buildMockDashboardData } from "@/lib/mock-dashboard";
-import type { DashboardData, DashboardFilters, UploadCaseResponse } from "@/types/dashboard";
+import type {
+  CaseAIStatus,
+  CaseAIStatusResponse,
+  CaseExtractionPreviewResponse,
+  DashboardData,
+  DashboardFilters,
+  UploadCaseResponse,
+  UserCaseListItem,
+} from "@/types/dashboard";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 
 const DEFAULT_FILTERS: DashboardFilters = {
@@ -51,6 +59,13 @@ const FILTER_OPTIONS = {
 
 const PANEL_CLASS = "rounded-2xl border border-slate-800/90 bg-slate-900/70 backdrop-blur-xl shadow-[0_18px_40px_rgba(2,6,23,0.45)]";
 const PANEL_SOFT_CLASS = "rounded-2xl border border-slate-800/80 bg-slate-900/45 backdrop-blur-xl shadow-[0_14px_30px_rgba(2,6,23,0.35)]";
+const EMPTY_UPLOAD_FORM = {
+  process_number: "",
+  tribunal: "",
+  judge: "",
+  action_type: "",
+  claim_value: "",
+};
 
 type DashboardTab = "visao-geral" | "inteligencia" | "simulacoes" | "alertas";
 type CardDetailVariant = "default" | "scenario";
@@ -137,6 +152,8 @@ type StrategicAlertListResponse = {
   generated_at: string;
   items: StrategicAlertItem[];
 };
+
+type ProcessingProgressTone = "processing" | "success" | "warning";
 
 function parsePercentValue(raw: string, fallback = 70): number {
   const numeric = Number(raw.replace("%", "").replace(",", ".").trim());
@@ -413,6 +430,29 @@ async function fetchStrategicAlerts(status: "new" | "active" | "all" = "new", li
   }
 }
 
+async function fetchUserCases(limit = 30): Promise<UserCaseListItem[]> {
+  try {
+    const params = new URLSearchParams();
+    params.set("limit", String(limit));
+    const res = await fetch(`/api/cases?${params.toString()}`, { credentials: "include" });
+    return await parseJsonOrThrow<UserCaseListItem[]>(res);
+  } catch (error) {
+    throw mapNetworkError(error, "Não foi possível carregar os casos do usuário agora.");
+  }
+}
+
+async function reprocessCaseAI(caseId: string): Promise<CaseAIStatusResponse> {
+  try {
+    const res = await fetch(`/api/cases/${caseId}/reprocess-ai`, {
+      method: "POST",
+      credentials: "include",
+    });
+    return await parseJsonOrThrow<CaseAIStatusResponse>(res);
+  } catch (error) {
+    throw mapNetworkError(error, "Não foi possível reprocessar este caso agora.");
+  }
+}
+
 async function runStrategicScan(): Promise<void> {
   try {
     const res = await fetch("/api/strategic-alerts/scan", {
@@ -437,6 +477,124 @@ async function markStrategicAlert(alertId: string, action: "read" | "dismiss"): 
   }
 }
 
+function getCaseAIStatusMeta(status: CaseAIStatus) {
+  switch (status) {
+    case "completed":
+      return { label: "Concluída", badge: "border-emerald-500/40 bg-emerald-500/15 text-emerald-200" };
+    case "processing":
+      return { label: "Processando", badge: "border-sky-500/40 bg-sky-500/15 text-sky-200" };
+    case "failed_retryable":
+      return { label: "Falha com retry", badge: "border-amber-500/40 bg-amber-500/15 text-amber-200" };
+    case "failed":
+      return { label: "Falha", badge: "border-red-500/40 bg-red-500/15 text-red-200" };
+    case "manual_review":
+      return { label: "Revisão manual", badge: "border-orange-500/40 bg-orange-500/15 text-orange-200" };
+    case "queued":
+    default:
+      return { label: "Na fila", badge: "border-slate-600 bg-slate-800/70 text-slate-200" };
+  }
+}
+
+function isCaseAIInFlight(status: CaseAIStatus): boolean {
+  return status === "queued" || status === "processing" || status === "failed_retryable";
+}
+
+function formatDateTimeLabel(value?: string | null): string | null {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return new Intl.DateTimeFormat("pt-BR", {
+    dateStyle: "short",
+    timeStyle: "short",
+  }).format(date);
+}
+
+function formatProbabilityPercent(value?: number | null): string {
+  if (typeof value !== "number" || !Number.isFinite(value)) return "--";
+  const normalized = value <= 1 ? value * 100 : value;
+  return `${Math.round(normalized)}%`;
+}
+
+function estimateCaseAIProgressFallback(caseItem: UserCaseListItem): number {
+  const attempts = Math.max(0, Number(caseItem.ai_attempts) || 0);
+  switch (caseItem.ai_status) {
+    case "queued":
+      return Math.min(25, 8 + attempts * 4);
+    case "processing":
+      return Math.min(90, 35 + attempts * 12);
+    case "failed_retryable":
+      return Math.min(85, 40 + attempts * 9);
+    case "completed":
+    case "failed":
+    case "manual_review":
+    default:
+      return 100;
+  }
+}
+
+function resolveCaseAIProgress(caseItem: UserCaseListItem): number {
+  const backendValue = caseItem.ai_progress_percent;
+  if (typeof backendValue === "number" && Number.isFinite(backendValue)) {
+    return Math.max(0, Math.min(100, Math.round(backendValue)));
+  }
+  return estimateCaseAIProgressFallback(caseItem);
+}
+
+function resolveCaseAIStageLabel(caseItem: UserCaseListItem): string {
+  if (typeof caseItem.ai_stage_label === "string" && caseItem.ai_stage_label.trim()) {
+    return caseItem.ai_stage_label.trim();
+  }
+
+  switch (caseItem.ai_stage) {
+    case "extraction":
+      return "Extração concluída.";
+    case "analysis_ai":
+      return "Análise IA em andamento.";
+    case "cross_data":
+      return "Cruzando dados.";
+    case "publication":
+      return "Publicando indicadores.";
+    case "completed":
+      return "Processamento concluído.";
+    case "failed":
+      return "Processamento interrompido.";
+    case "queued":
+      return "Na fila de processamento.";
+    default:
+      return "Processamento em andamento.";
+  }
+}
+
+function resolveTabLabel(tab: DashboardTab): string {
+  switch (tab) {
+    case "visao-geral":
+      return "Visão Geral";
+    case "inteligencia":
+      return "Inteligência Estratégica";
+    case "simulacoes":
+      return "Simulações Avançadas";
+    case "alertas":
+      return "Alertas Estratégicos";
+    default:
+      return "Dashboard";
+  }
+}
+
+function parseExtractedClaimValue(rawClaimValue: unknown): { textValue: string; numericValue: number | null } {
+  if (typeof rawClaimValue === "number" && Number.isFinite(rawClaimValue)) {
+    return { textValue: String(rawClaimValue), numericValue: rawClaimValue };
+  }
+  if (typeof rawClaimValue === "string" && rawClaimValue.trim()) {
+    const normalized = rawClaimValue.trim();
+    const parsed = Number(normalized.replace(/\./g, "").replace(",", ".").replace(/[^\d.-]/g, ""));
+    return {
+      textValue: normalized,
+      numericValue: Number.isFinite(parsed) ? parsed : null,
+    };
+  }
+  return { textValue: "", numericValue: null };
+}
+
 export default function Dashboard() {
   const [activeTab, setActiveTab] = useState<DashboardTab>("visao-geral");
   const [focusedSimulationScenario, setFocusedSimulationScenario] = useState<string | null>(null);
@@ -444,13 +602,7 @@ export default function Dashboard() {
   const [draftFilters, setDraftFilters] = useState<DashboardFilters>(DEFAULT_FILTERS);
   const [appliedFilters, setAppliedFilters] = useState<DashboardFilters>(DEFAULT_FILTERS);
   const [uploadFile, setUploadFile] = useState<File | null>(null);
-  const [uploadForm, setUploadForm] = useState({
-    process_number: "",
-    tribunal: "",
-    judge: "",
-    action_type: "",
-    claim_value: "",
-  });
+  const [uploadForm, setUploadForm] = useState(EMPTY_UPLOAD_FORM);
   const [sourceForm, setSourceForm] = useState({
     name: "",
     base_url: "",
@@ -466,6 +618,29 @@ export default function Dashboard() {
   const [isStrategicRecommendationsModalOpen, setIsStrategicRecommendationsModalOpen] = useState(false);
   const hasTriggeredInitialStrategicScan = useRef(false);
   const seenStrategicAlertIds = useRef<Set<string>>(new Set());
+  const casePollingBoostTimeoutRef = useRef<number | null>(null);
+  const casesLifecycleSignatureRef = useRef<string>("");
+  const [isCasePollingBoosted, setIsCasePollingBoosted] = useState(false);
+
+  const activateCasePollingBoost = useCallback((durationMs = 2 * 60 * 1000) => {
+    if (casePollingBoostTimeoutRef.current) {
+      window.clearTimeout(casePollingBoostTimeoutRef.current);
+    }
+    setIsCasePollingBoosted(true);
+    casePollingBoostTimeoutRef.current = window.setTimeout(() => {
+      setIsCasePollingBoosted(false);
+      casePollingBoostTimeoutRef.current = null;
+    }, durationMs);
+  }, []);
+
+  const refreshDashboardAndRelatedData = useCallback(() => {
+    queryClient.invalidateQueries({ queryKey: ["dashboard-data"] });
+    queryClient.invalidateQueries({ queryKey: ["user-cases"] });
+    queryClient.invalidateQueries({ queryKey: ["strategic-alerts"] });
+    void queryClient.refetchQueries({ queryKey: ["dashboard-data"], type: "active" });
+    void queryClient.refetchQueries({ queryKey: ["user-cases"], type: "active" });
+    void queryClient.refetchQueries({ queryKey: ["strategic-alerts"], type: "active" });
+  }, [queryClient]);
 
   const meQuery = useQuery({
     queryKey: ["auth-me"],
@@ -478,6 +653,8 @@ export default function Dashboard() {
     queryKey: ["dashboard-data", isDemoMode ? "demo" : "live", appliedFilters],
     queryFn: () => (isDemoMode ? Promise.resolve(buildMockDashboardData(appliedFilters)) : fetchDashboard(appliedFilters)),
     enabled: isDemoMode || meQuery.isSuccess,
+    refetchInterval: isDemoMode ? false : isCasePollingBoosted ? 5000 : 15000,
+    refetchIntervalInBackground: !isDemoMode,
     retry: false,
   });
 
@@ -486,7 +663,16 @@ export default function Dashboard() {
     queryFn: () => fetchStrategicAlerts("new", 100),
     enabled: !isDemoMode && meQuery.isSuccess,
     retry: false,
-    refetchInterval: 60000,
+    refetchInterval: isCasePollingBoosted ? 10000 : 60000,
+    refetchIntervalInBackground: true,
+  });
+
+  const userCasesQuery = useQuery({
+    queryKey: ["user-cases"],
+    queryFn: () => fetchUserCases(30),
+    enabled: !isDemoMode && meQuery.isSuccess,
+    retry: false,
+    refetchInterval: isCasePollingBoosted ? 5000 : 20000,
     refetchIntervalInBackground: true,
   });
 
@@ -514,6 +700,43 @@ export default function Dashboard() {
     },
   });
 
+  const reprocessCaseMutation = useMutation<CaseAIStatusResponse, Error, string>({
+    mutationFn: (caseId: string) => reprocessCaseAI(caseId),
+    onSuccess: (payload) => {
+      queryClient.setQueryData<UserCaseListItem[]>(["user-cases"], (previous) =>
+        (previous ?? []).map((item) =>
+          item.case_id === payload.case_id
+            ? {
+                ...item,
+                ai_status: payload.ai_status,
+                ai_attempts: payload.ai_attempts,
+                ai_stage: payload.ai_stage ?? item.ai_stage ?? "extraction",
+                ai_stage_label: payload.ai_stage_label ?? item.ai_stage_label ?? null,
+                ai_progress_percent: payload.ai_progress_percent ?? item.ai_progress_percent ?? null,
+                ai_stage_updated_at: payload.ai_stage_updated_at ?? item.ai_stage_updated_at ?? null,
+                ai_next_retry_at: payload.ai_next_retry_at ?? null,
+                ai_processed_at: payload.ai_processed_at ?? null,
+                ai_last_error: payload.ai_last_error ?? null,
+              }
+            : item,
+        ),
+      );
+      activateCasePollingBoost();
+
+      toast({
+        title: "Reprocessamento iniciado",
+        description: `Caso reenviado para a fila de IA (${getCaseAIStatusMeta(payload.ai_status).label.toLowerCase()}).`,
+      });
+      refreshDashboardAndRelatedData();
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Falha ao reprocessar",
+        description: error.message,
+      });
+    },
+  });
+
   const logoutMutation = useMutation({
     mutationFn: logout,
     onSuccess: () => {
@@ -527,6 +750,57 @@ export default function Dashboard() {
       });
     },
   });
+
+  const applyExtractedUploadForm = useCallback((extracted: UploadCaseResponse["extracted"] | undefined | null, processNumberFromPayload?: string) => {
+    const safeExtracted = extracted || {};
+    const { textValue: extractedClaimValue } = parseExtractedClaimValue((safeExtracted as { claim_value?: unknown }).claim_value);
+    setUploadForm((previous) => ({
+      process_number: safeExtracted.process_number || processNumberFromPayload || previous.process_number,
+      tribunal: safeExtracted.tribunal || previous.tribunal,
+      judge: safeExtracted.judge || previous.judge,
+      action_type: safeExtracted.action_type || previous.action_type,
+      claim_value: extractedClaimValue || previous.claim_value,
+    }));
+  }, []);
+
+  const extractPreviewMutation = useMutation({
+    mutationFn: async (selectedFile: File): Promise<CaseExtractionPreviewResponse> => {
+      const formData = new FormData();
+      formData.append("file", selectedFile);
+
+      try {
+        const res = await fetch("/api/cases/extract", {
+          method: "POST",
+          body: formData,
+          credentials: "include",
+        });
+        return await parseJsonOrThrow<CaseExtractionPreviewResponse>(res);
+      } catch (error) {
+        throw mapNetworkError(error, "Não foi possível extrair os dados automáticos do processo.");
+      }
+    },
+    onSuccess: (payload) => {
+      applyExtractedUploadForm(payload.extracted, payload.process_number);
+    },
+    onError: (error) => {
+      toast({
+        title: "Falha na extração automática",
+        description: error instanceof Error ? error.message : "Erro desconhecido",
+      });
+    },
+  });
+
+  const handleUploadFileChange = useCallback(
+    (event: ChangeEvent<HTMLInputElement>) => {
+      const selectedFile = event.target.files?.[0] ?? null;
+      setUploadFile(selectedFile);
+      setUploadForm({ ...EMPTY_UPLOAD_FORM });
+
+      if (!selectedFile) return;
+      extractPreviewMutation.mutate(selectedFile);
+    },
+    [extractPreviewMutation],
+  );
 
   const uploadMutation = useMutation({
     mutationFn: async (): Promise<UploadCaseResponse> => {
@@ -555,29 +829,54 @@ export default function Dashboard() {
     onSuccess: (payload) => {
       const extracted = payload.extracted || {};
       const extractedProcess = extracted.process_number || payload.process_number || "";
-      const rawClaimValue = (extracted as { claim_value?: unknown }).claim_value;
-      let extractedClaimValue = "";
-      if (typeof rawClaimValue === "number" && Number.isFinite(rawClaimValue)) {
-        extractedClaimValue = String(rawClaimValue);
-      } else if (typeof rawClaimValue === "string" && rawClaimValue.trim()) {
-        extractedClaimValue = rawClaimValue.trim();
-      }
+      const { numericValue: extractedClaimValueNumeric } = parseExtractedClaimValue((extracted as { claim_value?: unknown }).claim_value);
 
       toast({
         title: "Processo enviado",
-        description: extractedProcess
-          ? `Processo ${extractedProcess} processado com sucesso.`
-          : "Documento processado com sucesso.",
+        description:
+          payload.ai_status === "completed"
+            ? extractedProcess
+              ? `Processo ${extractedProcess} analisado com sucesso.`
+              : "Documento analisado com sucesso."
+            : payload.ai_status === "failed" || payload.ai_status === "manual_review"
+              ? "Documento salvo, mas a análise por IA falhou. Use o reprocessamento para tentar novamente."
+              : extractedProcess
+                ? `Processo ${extractedProcess} recebido e enviado para análise por IA.`
+                : "Documento recebido e enviado para análise por IA.",
       });
       setUploadFile(null);
-      setUploadForm((previous) => ({
-        process_number: extractedProcess || previous.process_number,
-        tribunal: extracted.tribunal || previous.tribunal,
-        judge: extracted.judge || previous.judge,
-        action_type: extracted.action_type || previous.action_type,
-        claim_value: extractedClaimValue || previous.claim_value,
-      }));
-      queryClient.invalidateQueries({ queryKey: ["dashboard-data"] });
+      applyExtractedUploadForm(extracted, payload.process_number);
+      queryClient.setQueryData<UserCaseListItem[]>(["user-cases"], (previous) => {
+        const optimisticItem: UserCaseListItem = {
+          case_id: payload.case_id,
+          process_number: extractedProcess || payload.process_number,
+          tribunal: extracted.tribunal ?? uploadForm.tribunal ?? null,
+          judge: extracted.judge ?? uploadForm.judge ?? null,
+          action_type: extracted.action_type ?? uploadForm.action_type ?? null,
+          claim_value: extractedClaimValueNumeric,
+          status: extracted.status ?? null,
+          success_probability: null,
+          settlement_probability: null,
+          expected_decision_months: null,
+          risk_score: null,
+          complexity_score: null,
+          ai_status: payload.ai_status,
+          ai_attempts: payload.ai_attempts,
+          ai_stage: payload.ai_stage ?? "extraction",
+          ai_stage_label: payload.ai_stage_label ?? "Extração concluída, aguardando análise por IA.",
+          ai_progress_percent: payload.ai_progress_percent ?? 25,
+          ai_stage_updated_at: payload.ai_stage_updated_at ?? null,
+          ai_next_retry_at: payload.ai_next_retry_at ?? null,
+          ai_processed_at: null,
+          ai_last_error: payload.ai_last_error ?? null,
+          created_at: payload.created_at,
+        };
+
+        const deduped = (previous ?? []).filter((item) => item.case_id !== optimisticItem.case_id);
+        return [optimisticItem, ...deduped].slice(0, 30);
+      });
+      activateCasePollingBoost();
+      refreshDashboardAndRelatedData();
     },
     onError: (error) => {
       toast({
@@ -661,7 +960,49 @@ export default function Dashboard() {
   const baseDashboardData = dashboardQuery.data;
 
   const strategicAlertItems = strategicAlertsQuery.data?.items ?? [];
+  const userCases = userCasesQuery.data ?? [];
   const dashboardData = useMemo(() => baseDashboardData, [baseDashboardData]);
+  const processingProgress = useMemo(() => {
+    if (isDemoMode || userCases.length === 0) {
+      return null;
+    }
+
+    const orderedCases = [...userCases].sort((a, b) => {
+      const aTime = a.created_at ? new Date(a.created_at).getTime() : 0;
+      const bTime = b.created_at ? new Date(b.created_at).getTime() : 0;
+      return bTime - aTime;
+    });
+    const inFlightCases = orderedCases.filter((item) => isCaseAIInFlight(item.ai_status));
+    const referenceCase = inFlightCases[0] ?? orderedCases[0];
+    if (!referenceCase) {
+      return null;
+    }
+
+    const percent = resolveCaseAIProgress(referenceCase);
+    const processLabel = referenceCase.process_number?.trim()
+      ? referenceCase.process_number
+      : `Caso ${referenceCase.case_id.slice(0, 8)}`;
+    const tabLabel = resolveTabLabel(activeTab);
+    const stageLabel = resolveCaseAIStageLabel(referenceCase);
+
+    let tone: ProcessingProgressTone = "processing";
+    let detail = `${stageLabel} ${inFlightCases.length} caso(s) aguardando conclusão da IA.`;
+    if (inFlightCases.length === 0 && referenceCase.ai_status === "completed") {
+      tone = "success";
+      detail = `${stageLabel} Último caso concluído: ${processLabel}.`;
+    } else if (inFlightCases.length === 0) {
+      tone = "warning";
+      detail = `${stageLabel} Último caso com revisão/falha: ${processLabel}.`;
+    }
+
+    return {
+      percent,
+      tone,
+      title: `${tabLabel} · Processamento IA`,
+      detail,
+      inFlightCount: inFlightCases.length,
+    };
+  }, [activeTab, isDemoMode, userCases]);
 
   const strategicModalData = useMemo(() => {
     const scores = dashboardData?.visao_geral.scores || [];
@@ -694,6 +1035,40 @@ export default function Dashboard() {
     hasTriggeredInitialStrategicScan.current = true;
     strategicScanMutation.mutate();
   }, [isDemoMode, meQuery.isSuccess, strategicScanMutation]);
+
+  useEffect(() => {
+    if (isDemoMode || userCases.length === 0) {
+      return;
+    }
+    if (userCases.some((item) => isCaseAIInFlight(item.ai_status))) {
+      activateCasePollingBoost();
+    }
+  }, [activateCasePollingBoost, isDemoMode, userCases]);
+
+  useEffect(() => {
+    if (isDemoMode) {
+      return;
+    }
+    const lifecycleSignature = userCases
+      .map(
+        (item) =>
+          `${item.case_id}:${item.ai_status}:${item.ai_stage ?? ""}:${item.ai_progress_percent ?? ""}:${item.ai_processed_at ?? ""}:${item.ai_attempts}:${item.ai_last_error ?? ""}`,
+      )
+      .join("|");
+
+    if (!lifecycleSignature) {
+      casesLifecycleSignatureRef.current = "";
+      return;
+    }
+
+    if (casesLifecycleSignatureRef.current && casesLifecycleSignatureRef.current !== lifecycleSignature) {
+      queryClient.invalidateQueries({ queryKey: ["dashboard-data"] });
+      queryClient.invalidateQueries({ queryKey: ["strategic-alerts"] });
+      void queryClient.refetchQueries({ queryKey: ["dashboard-data"], type: "active" });
+      void queryClient.refetchQueries({ queryKey: ["strategic-alerts"], type: "active" });
+    }
+    casesLifecycleSignatureRef.current = lifecycleSignature;
+  }, [isDemoMode, queryClient, userCases]);
 
   useEffect(() => {
     if (isDemoMode || strategicAlertItems.length === 0) return;
@@ -754,6 +1129,27 @@ export default function Dashboard() {
       setLocation("/auth?tab=login", { replace: true });
     }
   }, [isDemoMode, setLocation, strategicAlertsQuery.error]);
+
+  useEffect(() => {
+    if (isDemoMode) {
+      return;
+    }
+    if (!userCasesQuery.error) {
+      return;
+    }
+    if (isUnauthorizedError(userCasesQuery.error)) {
+      setLocation("/auth?tab=login", { replace: true });
+    }
+  }, [isDemoMode, setLocation, userCasesQuery.error]);
+
+  useEffect(() => {
+    return () => {
+      if (casePollingBoostTimeoutRef.current) {
+        window.clearTimeout(casePollingBoostTimeoutRef.current);
+        casePollingBoostTimeoutRef.current = null;
+      }
+    };
+  }, []);
 
   const userInitials = useMemo(() => {
     if (isDemoMode) {
@@ -923,10 +1319,10 @@ export default function Dashboard() {
       <header className="sticky top-0 z-50 border-b border-slate-800/80 bg-slate-950/85 px-4 py-3 backdrop-blur-xl lg:grid lg:grid-cols-[minmax(0,1fr)_minmax(560px,760px)_minmax(0,1fr)] lg:items-center lg:gap-3 lg:px-5 lg:py-2 xl:h-16 xl:px-6 xl:py-0">
         <Link
           href="/"
-          className="flex items-center gap-2 rounded-xl border border-slate-200/80 bg-slate-100/95 px-2.5 py-1.5 shadow-sm transition-colors dark:border-slate-700/80 dark:bg-slate-900/70 xl:justify-self-start"
+          className="brand-logo-chip flex items-center gap-2 rounded-xl px-2.5 py-1.5 shadow-sm transition-colors xl:justify-self-start"
         >
-          <Scale className="h-6 w-6 text-cyan-600 dark:text-cyan-300" />
-          <span className="text-xl font-bold tracking-tight text-slate-800 dark:text-slate-100">LexScale</span>
+          <Scale className="brand-logo-icon h-6 w-6" />
+          <span className="brand-logo-title text-xl font-bold tracking-tight">LexScale</span>
         </Link>
 
         <div className="mx-auto mt-3 w-full max-w-[840px] rounded-xl border border-slate-800 bg-slate-900/80 p-1 lg:mt-0 lg:w-full lg:max-w-[760px] lg:justify-self-center">
@@ -952,6 +1348,12 @@ export default function Dashboard() {
             </span>
             {dashboardData?.updated_label || "Atualizando..."}
           </div>
+          {processingProgress ? (
+            <div className="hidden items-center gap-2 rounded-full border border-cyan-400/30 bg-cyan-500/10 px-3 py-1 text-xs font-bold text-cyan-200 xl:flex">
+              <ActivitySquare size={12} />
+              IA {processingProgress.percent}%
+            </div>
+          ) : null}
           {isDemoMode ? (
             <>
               <span className="rounded-full border border-cyan-400/40 bg-cyan-500/15 px-3 py-1 text-[10px] font-bold uppercase tracking-[0.16em] text-cyan-200">
@@ -1024,8 +1426,10 @@ export default function Dashboard() {
               <input
                 type="file"
                 className="mt-1 block w-full text-sm text-slate-300 file:mr-3 file:py-2 file:px-3 file:rounded-md file:border file:border-slate-700 file:bg-slate-900 file:text-cyan-200 hover:file:bg-slate-800"
-                onChange={(event) => setUploadFile(event.target.files?.[0] ?? null)}
+                onChange={handleUploadFileChange}
+                disabled={extractPreviewMutation.isPending || uploadMutation.isPending}
               />
+              {extractPreviewMutation.isPending ? <p className="mt-1 text-[11px] text-cyan-300">Extraindo campos automaticamente...</p> : null}
             </div>
             <InputField label="Número do processo" value={uploadForm.process_number} onChange={(value) => setUploadForm((s) => ({ ...s, process_number: value }))} />
             <InputField label="Tribunal" value={uploadForm.tribunal} onChange={(value) => setUploadForm((s) => ({ ...s, tribunal: value }))} />
@@ -1035,9 +1439,13 @@ export default function Dashboard() {
           <div className="grid md:grid-cols-6 gap-3 items-end mt-3">
             <InputField label="Valor causa (R$)" value={uploadForm.claim_value} onChange={(value) => setUploadForm((s) => ({ ...s, claim_value: value }))} />
             <div className="md:col-span-5 flex justify-end">
-              <Button onClick={() => uploadMutation.mutate()} disabled={uploadMutation.isPending} className="bg-cyan-500 hover:bg-cyan-400 text-slate-950 gap-2 h-[38px] px-6 font-bold">
+              <Button
+                onClick={() => uploadMutation.mutate()}
+                disabled={uploadMutation.isPending || extractPreviewMutation.isPending || !uploadFile}
+                className="bg-cyan-500 hover:bg-cyan-400 text-slate-950 gap-2 h-[38px] px-6 font-bold"
+              >
                 <Upload size={16} />
-                {uploadMutation.isPending ? "Processando..." : "Enviar e Processar"}
+                {extractPreviewMutation.isPending ? "Extraindo..." : uploadMutation.isPending ? "Enviando..." : "Enviar para Analise"}
               </Button>
             </div>
           </div>
@@ -1056,6 +1464,88 @@ export default function Dashboard() {
                 </Button>
               </div>
             </div>
+          </div>
+
+          <div className="mt-5 border-t border-slate-800 pt-4">
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <p className="text-xs font-semibold uppercase text-slate-400">Análises AI dos seus casos</p>
+              {isCasePollingBoosted ? (
+                <span className="rounded-full border border-cyan-400/40 bg-cyan-500/15 px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-cyan-200">
+                  Monitoramento intensivo ativo
+                </span>
+              ) : null}
+            </div>
+            {userCasesQuery.isLoading ? (
+              <div className="rounded-xl border border-slate-800 bg-slate-900/40 px-4 py-5 text-sm text-slate-300">Carregando status das análises...</div>
+            ) : userCasesQuery.isError ? (
+              <div className="rounded-xl border border-red-500/30 bg-red-950/30 px-4 py-5 text-sm text-red-200">
+                Falha ao carregar casos: {userCasesQuery.error instanceof Error ? userCasesQuery.error.message : "erro desconhecido"}
+              </div>
+            ) : userCases.length === 0 ? (
+              <div className="rounded-xl border border-slate-800 bg-slate-900/40 px-4 py-5 text-sm text-slate-300">Nenhum caso enviado ainda.</div>
+            ) : (
+              <div className="space-y-2">
+                {userCases.slice(0, 8).map((item) => {
+                  const statusMeta = getCaseAIStatusMeta(item.ai_status);
+                  const createdAtLabel = formatDateTimeLabel(item.created_at);
+                  const processedAtLabel = formatDateTimeLabel(item.ai_processed_at);
+                  const retryAtLabel = formatDateTimeLabel(item.ai_next_retry_at);
+                  const stageProgress = resolveCaseAIProgress(item);
+                  const stageLabel = resolveCaseAIStageLabel(item);
+                  const canReprocess = item.ai_status === "failed" || item.ai_status === "manual_review" || item.ai_status === "failed_retryable";
+                  const isReprocessingThisCase = reprocessCaseMutation.isPending && reprocessCaseMutation.variables === item.case_id;
+                  const processLabel = item.process_number?.trim() ? item.process_number : `Caso ${item.case_id.slice(0, 8)}`;
+
+                  return (
+                    <div key={item.case_id} className="rounded-xl border border-slate-800 bg-slate-900/45 px-4 py-3">
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div>
+                          <p className="text-sm font-bold text-slate-100">{processLabel}</p>
+                          <p className="text-[11px] text-slate-400">
+                            {createdAtLabel ? `Enviado em ${createdAtLabel}` : "Data de envio indisponível"}
+                            {processedAtLabel ? ` • Último processamento: ${processedAtLabel}` : ""}
+                          </p>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <span className={`inline-flex rounded-full border px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider ${statusMeta.badge}`}>
+                            {statusMeta.label}
+                          </span>
+                          {canReprocess ? (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="h-7 border-slate-700 bg-slate-900/60 px-3 text-[11px] font-bold text-slate-100 hover:bg-slate-800"
+                              disabled={isReprocessingThisCase}
+                              onClick={() => reprocessCaseMutation.mutate(item.case_id)}
+                            >
+                              {isReprocessingThisCase ? "Reprocessando..." : "Reprocessar AI"}
+                            </Button>
+                          ) : null}
+                        </div>
+                      </div>
+                      <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-slate-300">
+                        <span className="rounded-md border border-slate-700 bg-slate-800/60 px-2 py-0.5">Êxito: {formatProbabilityPercent(item.success_probability)}</span>
+                        <span className="rounded-md border border-slate-700 bg-slate-800/60 px-2 py-0.5">Acordo: {formatProbabilityPercent(item.settlement_probability)}</span>
+                        <span className="rounded-md border border-slate-700 bg-slate-800/60 px-2 py-0.5">
+                          Risco: {typeof item.risk_score === "number" && Number.isFinite(item.risk_score) ? `${Math.round(item.risk_score)} / 100` : "--"}
+                        </span>
+                        <span className="rounded-md border border-slate-700 bg-slate-800/60 px-2 py-0.5">
+                          Tentativas IA: {typeof item.ai_attempts === "number" ? item.ai_attempts : 0}
+                        </span>
+                        <span className="rounded-md border border-cyan-500/35 bg-cyan-500/10 px-2 py-0.5 text-cyan-200">
+                          Progresso IA: {stageProgress}%
+                        </span>
+                      </div>
+                      <p className="mt-2 text-[11px] text-slate-300">{stageLabel}</p>
+                      {retryAtLabel && item.ai_status === "failed_retryable" ? (
+                        <p className="mt-2 text-[11px] text-amber-200">Nova tentativa automática prevista para {retryAtLabel}.</p>
+                      ) : null}
+                      {item.ai_last_error ? <p className="mt-2 text-[11px] text-red-200">Último erro: {item.ai_last_error}</p> : null}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
           </section>
         )}
@@ -1095,6 +1585,16 @@ export default function Dashboard() {
             <CheckSquare size={16} /> Aplicar Filtros
           </Button>
         </div>
+
+        {processingProgress ? (
+          <ProcessingProgressBanner
+            percent={processingProgress.percent}
+            title={processingProgress.title}
+            detail={processingProgress.detail}
+            tone={processingProgress.tone}
+            isInFlight={processingProgress.inFlightCount > 0}
+          />
+        ) : null}
 
         {dashboardQuery.isLoading && (
           <div className={`${PANEL_SOFT_CLASS} p-8 text-slate-300`}>Carregando dashboard...</div>
@@ -1796,7 +2296,7 @@ function AlertasView({
           <div className={`${PANEL_SOFT_CLASS} p-6 text-sm text-slate-300`}>
             {visibleAlerts.length === 0
               ? "Nenhum alerta pendente no momento."
-              : `Não há alertas pendentes na categoria .`}
+              : `Não há alertas pendentes na categoria ${activeFilterLabel ?? "selecionada"}.`}
           </div>
         ) : (
           filteredAlerts.map((item, idx) => (
@@ -2249,7 +2749,7 @@ function TabButton({ active, icon, text, onClick, badgeCount = 0 }: any) {
     <button
       onClick={onClick}
       className={`flex min-h-[40px] w-full items-center justify-center gap-2 rounded-md px-3 py-2 text-[12px] font-medium leading-tight transition-all sm:text-[13px] lg:whitespace-nowrap ${
-        active ? "bg-blue-600 text-white shadow-sm" : "text-slate-300 hover:text-white hover:bg-slate-800"
+        active ? "bg-blue-600 text-white shadow-sm" : "text-slate-700 hover:bg-slate-200 hover:text-slate-900 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-white"
       }`}
     >
       {icon}
@@ -2260,6 +2760,59 @@ function TabButton({ active, icon, text, onClick, badgeCount = 0 }: any) {
         </span>
       ) : null}
     </button>
+  );
+}
+
+function ProcessingProgressBanner({
+  percent,
+  title,
+  detail,
+  tone,
+  isInFlight,
+}: {
+  percent: number;
+  title: string;
+  detail: string;
+  tone: ProcessingProgressTone;
+  isInFlight: boolean;
+}) {
+  const clamped = Math.max(0, Math.min(100, Math.round(percent)));
+  const toneMap: Record<ProcessingProgressTone, { badge: string; bar: string; panel: string }> = {
+    processing: {
+      badge: "border-cyan-400/40 bg-cyan-500/20 text-cyan-200",
+      bar: "bg-cyan-400",
+      panel: `${PANEL_SOFT_CLASS} border-cyan-500/30`,
+    },
+    success: {
+      badge: "border-emerald-400/40 bg-emerald-500/20 text-emerald-200",
+      bar: "bg-emerald-400",
+      panel: `${PANEL_SOFT_CLASS} border-emerald-500/30`,
+    },
+    warning: {
+      badge: "border-amber-400/40 bg-amber-500/20 text-amber-200",
+      bar: "bg-amber-400",
+      panel: `${PANEL_SOFT_CLASS} border-amber-500/30`,
+    },
+  };
+  const styles = toneMap[tone];
+
+  return (
+    <section className={`${styles.panel} mb-6 p-4`}>
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <ActivitySquare size={16} className="text-slate-200" />
+          <p className="text-sm font-bold text-slate-100">{title}</p>
+        </div>
+        <span className={`inline-flex items-center gap-2 rounded-full border px-2.5 py-1 text-xs font-bold ${styles.badge}`}>
+          {isInFlight ? <RefreshCcw size={12} className="animate-spin" /> : null}
+          {clamped}%
+        </span>
+      </div>
+      <div className="h-2 w-full overflow-hidden rounded-full bg-slate-800/80">
+        <div className={`h-full rounded-full transition-all duration-500 ${styles.bar}`} style={{ width: `${clamped}%` }} />
+      </div>
+      <p className="mt-2 text-xs text-slate-300">{detail}</p>
+    </section>
   );
 }
 

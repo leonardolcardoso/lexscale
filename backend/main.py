@@ -5,6 +5,7 @@ import uuid as uuid_pkg
 import logging
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
@@ -13,11 +14,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from openai import OpenAI
 from pydantic import BaseModel, Field
-from sqlalchemy import or_, text
+from sqlalchemy import func, or_, text
 from sqlalchemy.orm import Session
 
 from backend.db import SessionLocal, get_db, init_database
 from backend.models import (
+    AIUsageLog,
     AIMessage,
     AuthSession,
     CaseDeadline,
@@ -30,6 +32,7 @@ from backend.models import (
 from backend.schemas.auth import AuthResponse, LoginRequest, ProfileUpdateRequest, RegisterRequest, UserMeResponse
 from backend.schemas.cases import (
     CaseAIStatusResponse,
+    CaseExtractionPreviewResponse,
     CaseExtractionPayload,
     CaseListItem,
     CaseScoresPayload,
@@ -65,6 +68,7 @@ from backend.services.cases import (
     save_upload_bytes,
 )
 from backend.services.dashboard import build_dashboard_data
+from backend.services.openai_usage import record_openai_usage
 from backend.services.public_data import (
     ensure_default_public_sources,
     normalize_public_record,
@@ -111,7 +115,13 @@ AI_STATUS_COMPLETED = "completed"
 AI_STATUS_FAILED_RETRYABLE = "failed_retryable"
 AI_STATUS_FAILED = "failed"
 AI_STATUS_MANUAL_REVIEW = "manual_review"
-AI_PROCESSING_POLL_SECONDS = max(5, int(os.getenv("AI_PROCESSING_POLL_SECONDS", "20")))
+AI_STAGE_EXTRACTION = "extraction"
+AI_STAGE_ANALYSIS = "analysis_ai"
+AI_STAGE_CROSS = "cross_data"
+AI_STAGE_PUBLICATION = "publication"
+AI_STAGE_COMPLETED = "completed"
+AI_STAGE_FAILED = "failed"
+AI_PROCESSING_POLL_SECONDS = max(5, int(os.getenv("AI_PROCESSING_POLL_SECONDS", "5")))
 AI_MAX_RETRY_ATTEMPTS = max(1, int(os.getenv("AI_MAX_RETRY_ATTEMPTS", "5")))
 
 
@@ -150,6 +160,38 @@ class HistoryItem(BaseModel):
 
 class SearchResult(HistoryItem):
     distance: float
+
+
+class AIUsageLogItem(BaseModel):
+    id: str
+    operation: str
+    model: str
+    input_tokens: int
+    output_tokens: int
+    total_tokens: int
+    estimated_cost_usd: Optional[float] = None
+    created_at: datetime
+    raw_usage: Optional[Dict[str, Any]] = None
+    context: Optional[Dict[str, Any]] = None
+
+
+class AIUsageOperationSummary(BaseModel):
+    operation: str
+    total_calls: int
+    total_tokens: int
+    estimated_cost_usd: float
+
+
+class AIUsageSummaryResponse(BaseModel):
+    range_days: int
+    range_start: datetime
+    range_end: datetime
+    total_calls: int
+    total_input_tokens: int
+    total_output_tokens: int
+    total_tokens: int
+    estimated_cost_usd: float
+    by_operation: List[AIUsageOperationSummary]
 
 
 def _relative_time_label(value: Optional[datetime]) -> str:
@@ -313,10 +355,25 @@ def _get_openai_client(optional: bool = False) -> Optional[OpenAI]:
     return OpenAI(api_key=api_key)
 
 
-def _create_embedding(client: OpenAI, value: str) -> List[float]:
+def _create_embedding(
+    client: OpenAI,
+    value: str,
+    db: Optional[Session] = None,
+    user_id: Optional[uuid_pkg.UUID] = None,
+    usage_operation: str = "main.create_embedding.embeddings",
+) -> List[float]:
     embedding_model = os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
     dimensions = int(os.getenv("OPENAI_EMBEDDING_DIMENSIONS", "1536"))
     response = client.embeddings.create(model=embedding_model, input=value, dimensions=dimensions)
+    record_openai_usage(
+        db=db,
+        logger=logger,
+        operation=usage_operation,
+        model=embedding_model,
+        usage=getattr(response, "usage", None),
+        user_id=user_id,
+        context={"feature": "embedding"},
+    )
     return response.data[0].embedding
 
 
@@ -341,6 +398,19 @@ def _normalize_score_100(value: Optional[float]) -> Optional[float]:
     return max(0.0, min(100.0, normalized))
 
 
+def _set_case_ai_progress(
+    case: ProcessCase,
+    *,
+    stage: str,
+    label: str,
+    percent: int,
+) -> None:
+    case.ai_stage = stage
+    case.ai_stage_label = (label or "").strip()[:220]
+    case.ai_progress_percent = max(0, min(100, int(percent)))
+    case.ai_stage_updated_at = datetime.now(timezone.utc)
+
+
 def _queue_case_ai_processing(db: Session, case: ProcessCase, reset_attempts: bool = False) -> None:
     case.ai_status = AI_STATUS_QUEUED
     if reset_attempts:
@@ -348,6 +418,12 @@ def _queue_case_ai_processing(db: Session, case: ProcessCase, reset_attempts: bo
     case.ai_last_error = None
     case.ai_next_retry_at = datetime.now(timezone.utc)
     case.ai_processed_at = None
+    _set_case_ai_progress(
+        case,
+        stage=AI_STAGE_EXTRACTION,
+        label="Extração concluída, aguardando análise por IA.",
+        percent=25,
+    )
 
 
 def _to_case_ai_status_response(case: ProcessCase) -> CaseAIStatusResponse:
@@ -355,6 +431,10 @@ def _to_case_ai_status_response(case: ProcessCase) -> CaseAIStatusResponse:
         case_id=str(case.id),
         ai_status=case.ai_status or AI_STATUS_QUEUED,
         ai_attempts=int(case.ai_attempts or 0),
+        ai_stage=case.ai_stage or AI_STAGE_EXTRACTION,
+        ai_stage_label=case.ai_stage_label,
+        ai_progress_percent=int(case.ai_progress_percent or 0),
+        ai_stage_updated_at=case.ai_stage_updated_at,
         ai_next_retry_at=case.ai_next_retry_at,
         ai_processed_at=case.ai_processed_at,
         ai_last_error=case.ai_last_error,
@@ -374,6 +454,12 @@ def _set_case_ai_failure(db: Session, case: ProcessCase, error: str, retryable: 
 
     case.ai_last_error = message
     case.ai_processed_at = None
+    _set_case_ai_progress(
+        case,
+        stage=AI_STAGE_FAILED,
+        label=message,
+        percent=max(int(case.ai_progress_percent or 0), 45),
+    )
     db.commit()
 
 
@@ -391,6 +477,10 @@ def _process_case_ai_enrichment(case_id: uuid_pkg.UUID) -> None:
                     ProcessCase.ai_attempts: (ProcessCase.ai_attempts + 1),
                     ProcessCase.ai_last_error: None,
                     ProcessCase.ai_next_retry_at: None,
+                    ProcessCase.ai_stage: AI_STAGE_ANALYSIS,
+                    ProcessCase.ai_stage_label: "Analisando documento com IA.",
+                    ProcessCase.ai_progress_percent: 45,
+                    ProcessCase.ai_stage_updated_at: datetime.now(timezone.utc),
                 },
                 synchronize_session=False,
             )
@@ -438,13 +528,30 @@ def _process_case_ai_enrichment(case_id: uuid_pkg.UUID) -> None:
                 judge=case.judge,
                 action_type=case.action_type,
                 claim_value=case.claim_value,
+                db=db,
+                user_id=case.user_id,
+                usage_operation="cases.async_enrichment.responses",
             )
         except Exception as exc:  # noqa: BLE001
             _set_case_ai_failure(db, case, f"Falha ao analisar caso com IA: {exc}", retryable=True)
             return
 
+        _set_case_ai_progress(
+            case,
+            stage=AI_STAGE_CROSS,
+            label="Cruzando resultados da IA com dados estruturados do processo.",
+            percent=72,
+        )
+        db.commit()
+
         try:
-            case_embedding = build_case_embedding(client, extracted_text)
+            case_embedding = build_case_embedding(
+                client=client,
+                text=extracted_text,
+                db=db,
+                user_id=case.user_id,
+                usage_operation="cases.async_enrichment.embeddings",
+            )
         except Exception:
             case_embedding = None
 
@@ -456,6 +563,13 @@ def _process_case_ai_enrichment(case_id: uuid_pkg.UUID) -> None:
         expected_decision_months = max(0.0, float(scores.expected_decision_months))
         risk_score = _normalize_score_100(scores.risk_score)
         complexity_score = _normalize_score_100(scores.complexity_score)
+
+        _set_case_ai_progress(
+            case,
+            stage=AI_STAGE_PUBLICATION,
+            label="Publicando resultados e atualizando indicadores do dashboard.",
+            percent=90,
+        )
 
         case.process_number = final_process_number
         case.title = final_extraction.title or case.title
@@ -489,7 +603,28 @@ def _process_case_ai_enrichment(case_id: uuid_pkg.UUID) -> None:
         case.ai_last_error = None
         case.ai_next_retry_at = None
         case.ai_processed_at = datetime.now(timezone.utc)
+        _set_case_ai_progress(
+            case,
+            stage=AI_STAGE_COMPLETED,
+            label="Processamento concluído com sucesso.",
+            percent=100,
+        )
         db.commit()
+
+
+def _trigger_case_ai_processing_async(case_id: uuid_pkg.UUID) -> None:
+    def _runner() -> None:
+        try:
+            _process_case_ai_enrichment(case_id)
+        except Exception:  # noqa: BLE001
+            logger.exception("Falha inesperada no processamento assíncrono imediato da IA para case_id=%s.", case_id)
+
+    worker = threading.Thread(
+        target=_runner,
+        name=f"ai-case-immediate-{str(case_id)[:8]}",
+        daemon=True,
+    )
+    worker.start()
 
 
 def _run_ai_case_scheduler() -> None:
@@ -802,6 +937,7 @@ def get_dashboard_data(
         periodo=periodo,
         ai_client=ai_client,
     )
+    db.commit()
     return dashboard
 
 
@@ -907,6 +1043,10 @@ def list_cases(
             complexity_score=item.complexity_score,
             ai_status=item.ai_status or AI_STATUS_QUEUED,
             ai_attempts=int(item.ai_attempts or 0),
+            ai_stage=item.ai_stage or AI_STAGE_EXTRACTION,
+            ai_stage_label=item.ai_stage_label,
+            ai_progress_percent=int(item.ai_progress_percent or 0),
+            ai_stage_updated_at=item.ai_stage_updated_at,
             ai_next_retry_at=item.ai_next_retry_at,
             ai_processed_at=item.ai_processed_at,
             ai_last_error=item.ai_last_error,
@@ -914,6 +1054,55 @@ def list_cases(
         )
         for item in rows
     ]
+
+
+@app.post("/api/cases/extract", response_model=CaseExtractionPreviewResponse)
+async def extract_case_preview(
+    file: UploadFile = File(...),
+    process_number: Optional[str] = Form(default=None),
+    tribunal: Optional[str] = Form(default=None),
+    judge: Optional[str] = Form(default=None),
+    action_type: Optional[str] = Form(default=None),
+    claim_value: Optional[float] = Form(default=None),
+    current_user: User = Depends(get_current_user),
+) -> CaseExtractionPreviewResponse:
+    del current_user
+    original_filename = file.filename or "processo.bin"
+    payload = await file.read()
+    if not payload:
+        raise HTTPException(status_code=400, detail="Arquivo vazio.")
+
+    suffix = Path(original_filename).suffix or ".bin"
+    temporary_path: Optional[Path] = None
+    extracted_text = ""
+
+    try:
+        with NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
+            temp_file.write(payload)
+            temporary_path = Path(temp_file.name)
+        extracted_text = extract_text_from_document(temporary_path, original_filename, file.content_type)
+    finally:
+        if temporary_path is not None and temporary_path.exists():
+            temporary_path.unlink(missing_ok=True)
+
+    if not extracted_text:
+        extracted_text = "Não foi possível extrair texto automaticamente deste arquivo."
+
+    process_number_norm = _normalize_optional_text(process_number)
+    tribunal_norm = _normalize_optional_text(tribunal)
+    judge_norm = _normalize_optional_text(judge)
+    action_type_norm = _normalize_optional_text(action_type)
+
+    extraction: CaseExtractionPayload = fallback_extract_case_data(
+        text=extracted_text,
+        process_number=process_number_norm,
+        tribunal=tribunal_norm,
+        judge=judge_norm,
+        action_type=action_type_norm,
+        claim_value=claim_value,
+    )
+    final_process_number = resolve_process_number(process_number_norm, extraction.process_number)
+    return CaseExtractionPreviewResponse(process_number=final_process_number, extracted=extraction)
 
 
 @app.post("/api/cases/upload", response_model=UploadCaseResponse)
@@ -972,6 +1161,10 @@ async def upload_case(
         complexity_score=None,
         case_embedding=None,
         ai_status=AI_STATUS_QUEUED,
+        ai_stage=AI_STAGE_EXTRACTION,
+        ai_stage_label="Extração concluída, aguardando análise por IA.",
+        ai_progress_percent=25,
+        ai_stage_updated_at=datetime.now(timezone.utc),
         ai_attempts=0,
         ai_last_error=None,
         ai_next_retry_at=datetime.now(timezone.utc),
@@ -1001,6 +1194,7 @@ async def upload_case(
 
     db.commit()
     db.refresh(case)
+    _trigger_case_ai_processing_async(case.id)
 
     return UploadCaseResponse(
         case_id=str(case.id),
@@ -1009,6 +1203,10 @@ async def upload_case(
         scores=None,
         ai_status=case.ai_status or AI_STATUS_QUEUED,
         ai_attempts=int(case.ai_attempts or 0),
+        ai_stage=case.ai_stage or AI_STAGE_EXTRACTION,
+        ai_stage_label=case.ai_stage_label,
+        ai_progress_percent=int(case.ai_progress_percent or 0),
+        ai_stage_updated_at=case.ai_stage_updated_at,
         ai_next_retry_at=case.ai_next_retry_at,
         ai_last_error=case.ai_last_error,
         created_at=case.created_at,
@@ -1043,6 +1241,7 @@ def reprocess_case_ai(
     _queue_case_ai_processing(db, case, reset_attempts=True)
     db.commit()
     db.refresh(case)
+    _trigger_case_ai_processing_async(case.id)
     return _to_case_ai_status_response(case)
 
 
@@ -1173,12 +1372,26 @@ def ai_chat(
     if not text_response:
         raise HTTPException(status_code=502, detail="OpenAI retornou resposta vazia.")
 
-    usage = getattr(response, "usage", None)
-    usage_dict = usage.model_dump() if usage and hasattr(usage, "model_dump") else None
+    usage_snapshot = record_openai_usage(
+        db=db,
+        logger=logger,
+        operation="api.ai.chat.responses",
+        model=model,
+        usage=getattr(response, "usage", None),
+        user_id=current_user.id,
+        context={"route": "/api/ai/chat"},
+    )
+    usage_dict = usage_snapshot.get("usage_dict")
 
     prompt_embedding = None
     try:
-        prompt_embedding = _create_embedding(client, payload.prompt)
+        prompt_embedding = _create_embedding(
+            client=client,
+            value=payload.prompt,
+            db=db,
+            user_id=current_user.id,
+            usage_operation="api.ai.chat.prompt_embedding",
+        )
     except Exception:
         prompt_embedding = None
 
@@ -1237,7 +1450,13 @@ def ai_search(
 ) -> List[SearchResult]:
     client = _get_openai_client(optional=False)
     try:
-        query_embedding = _create_embedding(client, payload.query)
+        query_embedding = _create_embedding(
+            client=client,
+            value=payload.query,
+            db=db,
+            user_id=current_user.id,
+            usage_operation="api.ai.search.query_embedding",
+        )
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"Falha ao gerar embedding: {exc}") from exc
 
@@ -1253,6 +1472,8 @@ def ai_search(
         .all()
     )
 
+    db.commit()
+
     return [
         SearchResult(
             message_id=str(message.id),
@@ -1264,6 +1485,98 @@ def ai_search(
             distance=float(distance_value),
         )
         for message, distance_value in rows
+    ]
+
+
+@app.get("/api/ai/usage/summary", response_model=AIUsageSummaryResponse)
+def ai_usage_summary(
+    days: int = Query(default=30, ge=1, le=365),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> AIUsageSummaryResponse:
+    range_end = datetime.now(timezone.utc)
+    range_start = range_end - timedelta(days=days)
+
+    totals = (
+        db.query(
+            func.count(AIUsageLog.id),
+            func.coalesce(func.sum(AIUsageLog.input_tokens), 0),
+            func.coalesce(func.sum(AIUsageLog.output_tokens), 0),
+            func.coalesce(func.sum(AIUsageLog.total_tokens), 0),
+            func.coalesce(func.sum(AIUsageLog.estimated_cost_usd), 0.0),
+        )
+        .filter(
+            AIUsageLog.user_id == current_user.id,
+            AIUsageLog.created_at >= range_start,
+        )
+        .one()
+    )
+    total_calls, total_input_tokens, total_output_tokens, total_tokens, estimated_cost_usd = totals
+
+    operation_rows = (
+        db.query(
+            AIUsageLog.operation,
+            func.count(AIUsageLog.id),
+            func.coalesce(func.sum(AIUsageLog.total_tokens), 0),
+            func.coalesce(func.sum(AIUsageLog.estimated_cost_usd), 0.0),
+        )
+        .filter(
+            AIUsageLog.user_id == current_user.id,
+            AIUsageLog.created_at >= range_start,
+        )
+        .group_by(AIUsageLog.operation)
+        .order_by(func.count(AIUsageLog.id).desc(), AIUsageLog.operation.asc())
+        .all()
+    )
+
+    return AIUsageSummaryResponse(
+        range_days=days,
+        range_start=range_start,
+        range_end=range_end,
+        total_calls=int(total_calls or 0),
+        total_input_tokens=int(total_input_tokens or 0),
+        total_output_tokens=int(total_output_tokens or 0),
+        total_tokens=int(total_tokens or 0),
+        estimated_cost_usd=float(estimated_cost_usd or 0.0),
+        by_operation=[
+            AIUsageOperationSummary(
+                operation=str(operation),
+                total_calls=int(calls or 0),
+                total_tokens=int(tokens or 0),
+                estimated_cost_usd=float(cost or 0.0),
+            )
+            for operation, calls, tokens, cost in operation_rows
+        ],
+    )
+
+
+@app.get("/api/ai/usage/logs", response_model=List[AIUsageLogItem])
+def ai_usage_logs(
+    limit: int = Query(default=50, ge=1, le=500),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> List[AIUsageLogItem]:
+    rows = (
+        db.query(AIUsageLog)
+        .filter(AIUsageLog.user_id == current_user.id)
+        .order_by(AIUsageLog.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+    return [
+        AIUsageLogItem(
+            id=str(item.id),
+            operation=item.operation,
+            model=item.model,
+            input_tokens=int(item.input_tokens or 0),
+            output_tokens=int(item.output_tokens or 0),
+            total_tokens=int(item.total_tokens or 0),
+            estimated_cost_usd=float(item.estimated_cost_usd) if item.estimated_cost_usd is not None else None,
+            created_at=item.created_at,
+            raw_usage=item.raw_usage,
+            context=item.context,
+        )
+        for item in rows
     ]
 
 

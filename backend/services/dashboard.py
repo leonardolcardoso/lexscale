@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import re
 import unicodedata
@@ -12,6 +13,7 @@ from openai import OpenAI
 from sqlalchemy.orm import Session
 
 from backend.models import CaseDeadline, ProcessCase, PublicCaseRecord
+from backend.services.openai_usage import record_openai_usage
 from backend.schemas.dashboard import (
     AlertCountData,
     AlertasData,
@@ -34,6 +36,8 @@ from backend.schemas.dashboard import (
     VisaoGeralData,
     WeeklyActivityPoint,
 )
+
+logger = logging.getLogger("backend.services.dashboard")
 
 
 def _is_all_filter(value: str, defaults: Sequence[str]) -> bool:
@@ -409,7 +413,12 @@ def _top_terms(values: List[str], limit: int = 4) -> List[str]:
     return [item for item, _count in Counter(cleaned).most_common(limit)]
 
 
-def _generate_ai_narratives(client: Optional[OpenAI], context: Dict[str, Any]) -> Dict[str, Any]:
+def _generate_ai_narratives(
+    client: Optional[OpenAI],
+    context: Dict[str, Any],
+    db: Optional[Session],
+    user_id: Optional[UUID],
+) -> Dict[str, Any]:
     if client is None:
         return {}
 
@@ -444,6 +453,15 @@ def _generate_ai_narratives(client: Optional[OpenAI], context: Dict[str, Any]) -
             ],
             temperature=0.2,
             max_output_tokens=900,
+        )
+        record_openai_usage(
+            db=db,
+            logger=logger,
+            operation="dashboard.generate_ai_narratives.responses",
+            model=model,
+            usage=getattr(response, "usage", None),
+            user_id=user_id,
+            context={"feature": "dashboard_narratives"},
         )
         parsed = _extract_first_json(_extract_response_text(response))
     except Exception:
@@ -595,6 +613,11 @@ def build_dashboard_data(
     sample_public = len(filtered_public)
     sample_total = sample_user + sample_public
     market_sample_total = len(filtered_global_cases) + len(filtered_public)
+    success_sample_count = len(success_values)
+    settlement_sample_count = len(settlement_values)
+    duration_sample_count = len(months_values)
+    risk_sample_count = len(risk_values) if risk_values else len(success_values)
+    projection_sample_count = max(success_sample_count, settlement_sample_count, duration_sample_count, risk_sample_count)
 
     filtered_case_ids = {item.id for item in filtered_user_cases}
     filtered_deadlines = [item for item in all_deadlines if item.case_id in filtered_case_ids]
@@ -618,6 +641,10 @@ def build_dashboard_data(
             "user_cases": sample_user,
             "public_records": sample_public,
             "market_cases": len(filtered_global_cases),
+            "success_observations": success_sample_count,
+            "settlement_observations": settlement_sample_count,
+            "duration_observations": duration_sample_count,
+            "risk_observations": risk_sample_count,
         },
         "metrics": {
             "success_rate": round(success_rate, 4),
@@ -637,7 +664,17 @@ def build_dashboard_data(
             "public_actions": _top_terms([_action_category(item.action_type) for item in filtered_public]),
         },
     }
-    ai_narratives = _generate_ai_narratives(ai_client, ai_context)
+    enable_ai_narratives = os.getenv("DASHBOARD_ENABLE_AI_NARRATIVES", "0").strip().lower() in {"1", "true", "yes", "on"}
+    ai_narratives = (
+        _generate_ai_narratives(
+            client=ai_client,
+            context=ai_context,
+            db=db,
+            user_id=user_id,
+        )
+        if enable_ai_narratives
+        else {}
+    )
 
     ai_insights = ai_narratives.get("insights", [])
     if len(ai_insights) >= 3:
@@ -646,7 +683,10 @@ def build_dashboard_data(
         insight_items = [
             InsightItem(
                 title="Panorama da carteira",
-                text=f"Recorte atual com {sample_user} casos do usuário e {sample_public} registros públicos cruzados.",
+                text=(
+                    f"Recorte atual com {sample_user} casos do usuário e {sample_public} registros públicos; "
+                    f"{projection_sample_count} observações válidas nos indicadores."
+                ),
             ),
             InsightItem(
                 title="Comparativo com o mercado",
@@ -673,7 +713,7 @@ def build_dashboard_data(
                     if success_values
                     else "Sem amostra suficiente para calcular êxito."
                 ),
-                footer=f"Baseado em {sample_total} registros cruzados (usuário + público).",
+                footer=f"Baseado em {success_sample_count} observações com desfecho válido (usuário + público).",
                 color="blue",
                 updated=datetime.now().strftime("Atualizado em %d/%m/%Y às %H:%M"),
             ),
@@ -686,7 +726,7 @@ def build_dashboard_data(
                     if settlement_values
                     else "Sem amostra suficiente para calcular acordo."
                 ),
-                footer=f"Baseado em {len(settlement_values)} eventos de acordo identificados.",
+                footer=f"Baseado em {settlement_sample_count} eventos de acordo identificados.",
                 color="blue",
                 updated=datetime.now().strftime("Atualizado em %d/%m/%Y às %H:%M"),
             ),
@@ -698,9 +738,9 @@ def build_dashboard_data(
                     if months_values
                     else "Sem amostra suficiente para calcular tempo médio."
                 ),
-                footer="Calculado a partir de tempos internos e duração de registros públicos.",
+                footer=f"Calculado a partir de {duration_sample_count} observações de tempo (internas + públicas).",
                 color="orange",
-                warning="Amostra limitada: interpretar com cautela" if sample_total < 15 and sample_total > 0 else None,
+                warning="Amostra limitada: interpretar com cautela" if duration_sample_count < 15 and duration_sample_count > 0 else None,
             ),
         ],
         scores=[
@@ -768,7 +808,9 @@ def build_dashboard_data(
     baseline_months = avg_months if months_values else market_months
     baseline_value = user_claim if user_claim > 0 else market_claim
 
-    has_projection_base = baseline_success > 0 or baseline_risk > 0 or baseline_months > 0 or baseline_value > 0
+    has_projection_base = projection_sample_count > 0 and (
+        baseline_success > 0 or baseline_risk > 0 or baseline_months > 0 or baseline_value > 0
+    )
 
     if has_projection_base:
         scenario_a_success = _clamp(baseline_success - 0.03, 0.0, 1.0)
@@ -793,9 +835,9 @@ def build_dashboard_data(
         scenario_a_risk = scenario_b_risk = scenario_c_risk = 0.0
 
     scenario_notes = ai_narratives.get("scenario_notes", {})
-    note_a = str(scenario_notes.get("A") or f"Projeção com base em {sample_total} registros do recorte.")
-    note_b = str(scenario_notes.get("B") or f"Projeção com base em {sample_total} registros do recorte.")
-    note_c = str(scenario_notes.get("C") or f"Projeção com base em {sample_total} registros do recorte.")
+    note_a = str(scenario_notes.get("A") or f"Projeção com base em {projection_sample_count} observações válidas do recorte.")
+    note_b = str(scenario_notes.get("B") or f"Projeção com base em {projection_sample_count} observações válidas do recorte.")
+    note_c = str(scenario_notes.get("C") or f"Projeção com base em {projection_sample_count} observações válidas do recorte.")
 
     simulacoes = SimulacaoData(
         description=(
@@ -872,7 +914,7 @@ def build_dashboard_data(
     alert_notes = ai_narratives.get("alert_notes", {})
 
     details: List[DetailedAlertData] = []
-    if market_months > 0 and avg_months > market_months and sample_total > 0:
+    if market_months > 0 and avg_months > market_months and duration_sample_count > 0:
         details.append(
             DetailedAlertData(
                 type="critical",
@@ -885,7 +927,7 @@ def build_dashboard_data(
             ),
         )
 
-    if risk_score >= 45 and sample_total > 0:
+    if risk_score >= 45 and risk_sample_count > 0:
         details.append(
             DetailedAlertData(
                 type="warning",
