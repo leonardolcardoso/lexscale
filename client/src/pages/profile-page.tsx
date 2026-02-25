@@ -105,12 +105,12 @@ export default function ProfilePage() {
   return (
     <div className="profile-shell min-h-screen bg-[radial-gradient(circle_at_15%_10%,rgba(59,130,246,0.28),transparent_40%),radial-gradient(circle_at_85%_0%,rgba(20,184,166,0.2),transparent_35%),linear-gradient(180deg,#050b1d_0%,#040916_100%)] p-6 md:p-10">
       <div className="mx-auto w-full max-w-4xl">
-        <header className="mb-6 flex items-center justify-between">
+        <header className="mb-6 flex flex-wrap items-center justify-between gap-3">
           <Link href="/" className="inline-flex items-center gap-2 text-slate-900 dark:text-white">
             <Scale className="h-5 w-5 text-cyan-300" />
             <span className="font-bold">LexScale</span>
           </Link>
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             <Button variant="outline" className="border-slate-700 bg-slate-900/50 text-slate-100 hover:bg-slate-800" onClick={goBack}>
               <ArrowLeft className="mr-1 h-4 w-4" />
               Voltar

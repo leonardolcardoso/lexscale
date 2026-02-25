@@ -22,6 +22,7 @@ import {
   Eye,
   Upload,
   RefreshCcw,
+  History,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -29,13 +30,14 @@ import { ResponsiveContainer, RadarChart, PolarGrid, PolarAngleAxis, Radar, BarC
 import { useToast } from "@/hooks/use-toast";
 import { buildInitials, fetchMe, isUnauthorizedError, logout } from "@/lib/auth";
 import { mapNetworkError, parseApiErrorResponse } from "@/lib/http-errors";
-import { buildMockDashboardData } from "@/lib/mock-dashboard";
+import { buildMockDashboardData, buildMockUploadHistory } from "@/lib/mock-dashboard";
 import type {
   CaseAIStatus,
   CaseAIStatusResponse,
   CaseExtractionPreviewResponse,
   DashboardData,
   DashboardFilters,
+  UploadHistoryItem,
   UploadCaseResponse,
   UserCaseListItem,
 } from "@/types/dashboard";
@@ -67,7 +69,7 @@ const EMPTY_UPLOAD_FORM = {
   claim_value: "",
 };
 
-type DashboardTab = "visao-geral" | "inteligencia" | "simulacoes" | "alertas";
+type DashboardTab = "visao-geral" | "inteligencia" | "simulacoes" | "alertas" | "historico-uploads";
 type CardDetailVariant = "default" | "scenario";
 
 type CardDetail = {
@@ -441,6 +443,26 @@ async function fetchUserCases(limit = 30): Promise<UserCaseListItem[]> {
   }
 }
 
+async function fetchUploadHistory(limit = 80): Promise<UploadHistoryItem[]> {
+  try {
+    const params = new URLSearchParams();
+    params.set("limit", String(limit));
+    const res = await fetch(`/api/cases/upload-history?${params.toString()}`, { credentials: "include" });
+    return await parseJsonOrThrow<UploadHistoryItem[]>(res);
+  } catch (error) {
+    throw mapNetworkError(error, "Não foi possível carregar o histórico de uploads agora.");
+  }
+}
+
+async function fetchCaseDashboardContext(caseId: string): Promise<DashboardData> {
+  try {
+    const res = await fetch(`/api/cases/${caseId}/dashboard-context`, { credentials: "include" });
+    return await parseJsonOrThrow<DashboardData>(res);
+  } catch (error) {
+    throw mapNetworkError(error, "Não foi possível carregar os comparativos deste upload agora.");
+  }
+}
+
 async function reprocessCaseAI(caseId: string): Promise<CaseAIStatusResponse> {
   try {
     const res = await fetch(`/api/cases/${caseId}/reprocess-ai`, {
@@ -480,18 +502,36 @@ async function markStrategicAlert(alertId: string, action: "read" | "dismiss"): 
 function getCaseAIStatusMeta(status: CaseAIStatus) {
   switch (status) {
     case "completed":
-      return { label: "Concluída", badge: "border-emerald-500/40 bg-emerald-500/15 text-emerald-200" };
+      return {
+        label: "Concluída",
+        badge: "border-emerald-300 bg-emerald-100 text-emerald-800 dark:border-emerald-500/40 dark:bg-emerald-500/15 dark:text-emerald-200",
+      };
     case "processing":
-      return { label: "Processando", badge: "border-sky-500/40 bg-sky-500/15 text-sky-200" };
+      return {
+        label: "Processando",
+        badge: "border-sky-300 bg-sky-100 text-sky-800 dark:border-sky-500/40 dark:bg-sky-500/15 dark:text-sky-200",
+      };
     case "failed_retryable":
-      return { label: "Falha com retry", badge: "border-amber-500/40 bg-amber-500/15 text-amber-200" };
+      return {
+        label: "Falha com retry",
+        badge: "border-amber-300 bg-amber-100 text-amber-800 dark:border-amber-500/40 dark:bg-amber-500/15 dark:text-amber-200",
+      };
     case "failed":
-      return { label: "Falha", badge: "border-red-500/40 bg-red-500/15 text-red-200" };
+      return {
+        label: "Falha",
+        badge: "border-red-300 bg-red-100 text-red-800 dark:border-red-500/40 dark:bg-red-500/15 dark:text-red-200",
+      };
     case "manual_review":
-      return { label: "Revisão manual", badge: "border-orange-500/40 bg-orange-500/15 text-orange-200" };
+      return {
+        label: "Revisão manual",
+        badge: "border-orange-300 bg-orange-100 text-orange-800 dark:border-orange-500/40 dark:bg-orange-500/15 dark:text-orange-200",
+      };
     case "queued":
     default:
-      return { label: "Na fila", badge: "border-slate-600 bg-slate-800/70 text-slate-200" };
+      return {
+        label: "Na fila",
+        badge: "border-slate-300 bg-slate-100 text-slate-700 dark:border-slate-600 dark:bg-slate-800/70 dark:text-slate-200",
+      };
   }
 }
 
@@ -515,7 +555,26 @@ function formatProbabilityPercent(value?: number | null): string {
   return `${Math.round(normalized)}%`;
 }
 
-function estimateCaseAIProgressFallback(caseItem: UserCaseListItem): number {
+function formatCurrencyBRL(value?: number | null): string {
+  if (typeof value !== "number" || !Number.isFinite(value)) return "--";
+  return new Intl.NumberFormat("pt-BR", {
+    style: "currency",
+    currency: "BRL",
+    maximumFractionDigits: 2,
+  }).format(value);
+}
+
+function formatContentTypeLabel(contentType?: string | null): string {
+  if (!contentType || typeof contentType !== "string") return "Não informado";
+  const normalized = contentType.toLowerCase();
+  if (normalized.includes("pdf")) return "PDF";
+  if (normalized.includes("officedocument.wordprocessingml.document")) return "DOCX";
+  if (normalized.includes("msword")) return "DOC";
+  if (normalized.startsWith("image/")) return `Imagem (${normalized.replace("image/", "").toUpperCase()})`;
+  return contentType;
+}
+
+function estimateCaseAIProgressFallback(caseItem: { ai_attempts?: number | null; ai_status: CaseAIStatus }): number {
   const attempts = Math.max(0, Number(caseItem.ai_attempts) || 0);
   switch (caseItem.ai_status) {
     case "queued":
@@ -532,7 +591,7 @@ function estimateCaseAIProgressFallback(caseItem: UserCaseListItem): number {
   }
 }
 
-function resolveCaseAIProgress(caseItem: UserCaseListItem): number {
+function resolveCaseAIProgress(caseItem: { ai_status: CaseAIStatus; ai_attempts?: number | null; ai_progress_percent?: number | null }): number {
   const backendValue = caseItem.ai_progress_percent;
   if (typeof backendValue === "number" && Number.isFinite(backendValue)) {
     return Math.max(0, Math.min(100, Math.round(backendValue)));
@@ -540,7 +599,7 @@ function resolveCaseAIProgress(caseItem: UserCaseListItem): number {
   return estimateCaseAIProgressFallback(caseItem);
 }
 
-function resolveCaseAIStageLabel(caseItem: UserCaseListItem): string {
+function resolveCaseAIStageLabel(caseItem: { ai_stage_label?: string | null; ai_stage?: string | null }): string {
   if (typeof caseItem.ai_stage_label === "string" && caseItem.ai_stage_label.trim()) {
     return caseItem.ai_stage_label.trim();
   }
@@ -575,6 +634,8 @@ function resolveTabLabel(tab: DashboardTab): string {
       return "Simulações Avançadas";
     case "alertas":
       return "Alertas Estratégicos";
+    case "historico-uploads":
+      return "Histórico de Uploads";
     default:
       return "Dashboard";
   }
@@ -615,6 +676,7 @@ export default function Dashboard() {
   const [dismissedAlerts, setDismissedAlerts] = useState<string[]>([]);
   const [selectedCardDetail, setSelectedCardDetail] = useState<CardDetail | null>(null);
   const [selectedSimilarProcess, setSelectedSimilarProcess] = useState<SimilarProcessDetail | null>(null);
+  const [selectedHistoryCase, setSelectedHistoryCase] = useState<UploadHistoryItem | null>(null);
   const [isStrategicRecommendationsModalOpen, setIsStrategicRecommendationsModalOpen] = useState(false);
   const hasTriggeredInitialStrategicScan = useRef(false);
   const seenStrategicAlertIds = useRef<Set<string>>(new Set());
@@ -636,9 +698,11 @@ export default function Dashboard() {
   const refreshDashboardAndRelatedData = useCallback(() => {
     queryClient.invalidateQueries({ queryKey: ["dashboard-data"] });
     queryClient.invalidateQueries({ queryKey: ["user-cases"] });
+    queryClient.invalidateQueries({ queryKey: ["upload-history"] });
     queryClient.invalidateQueries({ queryKey: ["strategic-alerts"] });
     void queryClient.refetchQueries({ queryKey: ["dashboard-data"], type: "active" });
     void queryClient.refetchQueries({ queryKey: ["user-cases"], type: "active" });
+    void queryClient.refetchQueries({ queryKey: ["upload-history"], type: "active" });
     void queryClient.refetchQueries({ queryKey: ["strategic-alerts"], type: "active" });
   }, [queryClient]);
 
@@ -676,6 +740,23 @@ export default function Dashboard() {
     refetchIntervalInBackground: true,
   });
 
+  const uploadHistoryQuery = useQuery({
+    queryKey: ["upload-history"],
+    queryFn: () => fetchUploadHistory(80),
+    enabled: !isDemoMode && meQuery.isSuccess,
+    retry: false,
+    refetchInterval: isCasePollingBoosted ? 7000 : 25000,
+    refetchIntervalInBackground: true,
+  });
+
+  const selectedHistoryCaseId = selectedHistoryCase?.case_id ?? null;
+  const caseDashboardContextQuery = useQuery({
+    queryKey: ["case-dashboard-context", selectedHistoryCaseId],
+    queryFn: () => fetchCaseDashboardContext(selectedHistoryCaseId as string),
+    enabled: !isDemoMode && meQuery.isSuccess && Boolean(selectedHistoryCaseId),
+    retry: false,
+  });
+
   const strategicScanMutation = useMutation({
     mutationFn: runStrategicScan,
     onSuccess: () => {
@@ -704,6 +785,24 @@ export default function Dashboard() {
     mutationFn: (caseId: string) => reprocessCaseAI(caseId),
     onSuccess: (payload) => {
       queryClient.setQueryData<UserCaseListItem[]>(["user-cases"], (previous) =>
+        (previous ?? []).map((item) =>
+          item.case_id === payload.case_id
+            ? {
+                ...item,
+                ai_status: payload.ai_status,
+                ai_attempts: payload.ai_attempts,
+                ai_stage: payload.ai_stage ?? item.ai_stage ?? "extraction",
+                ai_stage_label: payload.ai_stage_label ?? item.ai_stage_label ?? null,
+                ai_progress_percent: payload.ai_progress_percent ?? item.ai_progress_percent ?? null,
+                ai_stage_updated_at: payload.ai_stage_updated_at ?? item.ai_stage_updated_at ?? null,
+                ai_next_retry_at: payload.ai_next_retry_at ?? null,
+                ai_processed_at: payload.ai_processed_at ?? null,
+                ai_last_error: payload.ai_last_error ?? null,
+              }
+            : item,
+        ),
+      );
+      queryClient.setQueryData<UploadHistoryItem[]>(["upload-history"], (previous) =>
         (previous ?? []).map((item) =>
           item.case_id === payload.case_id
             ? {
@@ -830,6 +929,8 @@ export default function Dashboard() {
       const extracted = payload.extracted || {};
       const extractedProcess = extracted.process_number || payload.process_number || "";
       const { numericValue: extractedClaimValueNumeric } = parseExtractedClaimValue((extracted as { claim_value?: unknown }).claim_value);
+      const selectedFilename = uploadFile?.name || null;
+      const selectedFileContentType = uploadFile?.type || null;
 
       toast({
         title: "Processo enviado",
@@ -874,6 +975,53 @@ export default function Dashboard() {
 
         const deduped = (previous ?? []).filter((item) => item.case_id !== optimisticItem.case_id);
         return [optimisticItem, ...deduped].slice(0, 30);
+      });
+      queryClient.setQueryData<UploadHistoryItem[]>(["upload-history"], (previous) => {
+        const optimisticHistoryItem: UploadHistoryItem = {
+          case_id: payload.case_id,
+          process_number: extractedProcess || payload.process_number,
+          case_title: extracted.title ?? null,
+          filename: selectedFilename,
+          content_type: selectedFileContentType,
+          tribunal: extracted.tribunal ?? uploadForm.tribunal ?? null,
+          judge: extracted.judge ?? uploadForm.judge ?? null,
+          action_type: extracted.action_type ?? uploadForm.action_type ?? null,
+          claim_value: extractedClaimValueNumeric,
+          status: extracted.status ?? null,
+          ai_status: payload.ai_status,
+          ai_attempts: payload.ai_attempts,
+          ai_stage: payload.ai_stage ?? "extraction",
+          ai_stage_label: payload.ai_stage_label ?? "Extração concluída, aguardando análise por IA.",
+          ai_progress_percent: payload.ai_progress_percent ?? 25,
+          ai_stage_updated_at: payload.ai_stage_updated_at ?? null,
+          ai_next_retry_at: payload.ai_next_retry_at ?? null,
+          ai_processed_at: null,
+          ai_last_error: payload.ai_last_error ?? null,
+          created_at: payload.created_at,
+          generated_data: {
+            extracted: {
+              process_number: extracted.process_number ?? null,
+              title: extracted.title ?? null,
+              tribunal: extracted.tribunal ?? null,
+              judge: extracted.judge ?? null,
+              action_type: extracted.action_type ?? null,
+              claim_value: extractedClaimValueNumeric,
+              status: extracted.status ?? null,
+              parties: {},
+              key_facts: [],
+              deadlines: [],
+            },
+            success_probability: payload.scores?.success_probability ?? null,
+            settlement_probability: payload.scores?.settlement_probability ?? null,
+            expected_decision_months: payload.scores?.expected_decision_months ?? null,
+            risk_score: payload.scores?.risk_score ?? null,
+            complexity_score: payload.scores?.complexity_score ?? null,
+            ai_summary: payload.scores?.ai_summary ?? null,
+          },
+        };
+
+        const deduped = (previous ?? []).filter((item) => item.case_id !== optimisticHistoryItem.case_id);
+        return [optimisticHistoryItem, ...deduped].slice(0, 80);
       });
       activateCasePollingBoost();
       refreshDashboardAndRelatedData();
@@ -961,6 +1109,10 @@ export default function Dashboard() {
 
   const strategicAlertItems = strategicAlertsQuery.data?.items ?? [];
   const userCases = userCasesQuery.data ?? [];
+  const uploadHistoryItems = useMemo(
+    () => (isDemoMode ? buildMockUploadHistory(appliedFilters) : uploadHistoryQuery.data ?? []),
+    [appliedFilters, isDemoMode, uploadHistoryQuery.data],
+  );
   const dashboardData = useMemo(() => baseDashboardData, [baseDashboardData]);
   const processingProgress = useMemo(() => {
     if (isDemoMode || userCases.length === 0) {
@@ -1143,6 +1295,30 @@ export default function Dashboard() {
   }, [isDemoMode, setLocation, userCasesQuery.error]);
 
   useEffect(() => {
+    if (isDemoMode) {
+      return;
+    }
+    if (!uploadHistoryQuery.error) {
+      return;
+    }
+    if (isUnauthorizedError(uploadHistoryQuery.error)) {
+      setLocation("/auth?tab=login", { replace: true });
+    }
+  }, [isDemoMode, setLocation, uploadHistoryQuery.error]);
+
+  useEffect(() => {
+    if (isDemoMode) {
+      return;
+    }
+    if (!caseDashboardContextQuery.error) {
+      return;
+    }
+    if (isUnauthorizedError(caseDashboardContextQuery.error)) {
+      setLocation("/auth?tab=login", { replace: true });
+    }
+  }, [caseDashboardContextQuery.error, isDemoMode, setLocation]);
+
+  useEffect(() => {
     return () => {
       if (casePollingBoostTimeoutRef.current) {
         window.clearTimeout(casePollingBoostTimeoutRef.current);
@@ -1316,17 +1492,17 @@ export default function Dashboard() {
 
   return (
     <div className="dashboard-shell min-h-screen flex flex-col bg-[radial-gradient(circle_at_8%_-10%,rgba(37,99,235,0.35),transparent_35%),radial-gradient(circle_at_90%_-20%,rgba(20,184,166,0.2),transparent_35%),linear-gradient(180deg,#070b1a_0%,#090f22_55%,#070c1a_100%)]">
-      <header className="sticky top-0 z-50 border-b border-slate-800/80 bg-slate-950/85 px-4 py-3 backdrop-blur-xl lg:grid lg:grid-cols-[minmax(0,1fr)_minmax(560px,760px)_minmax(0,1fr)] lg:items-center lg:gap-3 lg:px-5 lg:py-2 xl:h-16 xl:px-6 xl:py-0">
+      <header className="sticky top-0 z-50 border-b border-slate-800/80 bg-slate-950/85 px-4 py-3 backdrop-blur-xl lg:flex lg:items-center lg:gap-3 lg:px-5 lg:py-2 xl:h-16 xl:px-6 xl:py-0">
         <Link
           href="/"
-          className="brand-logo-chip flex items-center gap-2 rounded-xl px-2.5 py-1.5 shadow-sm transition-colors xl:justify-self-start"
+          className="brand-logo-chip flex items-center gap-2 rounded-xl px-2.5 py-1.5 shadow-sm transition-colors"
         >
           <Scale className="brand-logo-icon h-6 w-6" />
           <span className="brand-logo-title text-xl font-bold tracking-tight">LexScale</span>
         </Link>
 
-        <div className="mx-auto mt-3 w-full max-w-[840px] rounded-xl border border-slate-800 bg-slate-900/80 p-1 lg:mt-0 lg:w-full lg:max-w-[760px] lg:justify-self-center">
-          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-4">
+        <div className="mt-3 w-full rounded-xl border border-slate-800 bg-slate-900/80 p-1 lg:mt-0 lg:w-auto lg:max-w-full lg:flex-none lg:overflow-x-auto">
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:flex lg:w-max lg:gap-2">
             <TabButton active={activeTab === "visao-geral"} onClick={() => setActiveTab("visao-geral")} icon={<LayoutDashboard size={16} />} text="Visão Geral" />
             <TabButton active={activeTab === "inteligencia"} onClick={() => setActiveTab("inteligencia")} icon={<BrainCircuit size={16} />} text="Inteligência Estratégica" />
             <TabButton active={activeTab === "simulacoes"} onClick={() => setActiveTab("simulacoes")} icon={<ActivitySquare size={16} />} text="Simulações Avançadas" />
@@ -1337,10 +1513,17 @@ export default function Dashboard() {
               text="Alertas Estratégicos"
               badgeCount={alertTabBadgeCount}
             />
+            <TabButton
+              active={activeTab === "historico-uploads"}
+              onClick={() => setActiveTab("historico-uploads")}
+              icon={<History size={16} />}
+              text="Histórico de Uploads"
+              badgeCount={uploadHistoryItems.length}
+            />
           </div>
         </div>
 
-        <div className="mt-3 flex flex-wrap items-center justify-center gap-2 sm:gap-3 lg:mt-0 lg:justify-end lg:justify-self-end">
+        <div className="mt-3 flex flex-wrap items-center justify-center gap-2 sm:gap-3 lg:mt-0 lg:ml-auto lg:flex-none lg:justify-end">
           <div className="hidden items-center gap-2 text-sm text-slate-300 xl:flex">
             <span className="relative flex h-2 w-2">
               <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
@@ -1395,7 +1578,7 @@ export default function Dashboard() {
         </div>
       </header>
 
-      <main className={`flex-1 p-6 max-w-[1400px] mx-auto w-full transition-opacity duration-300 ${isFiltering ? "opacity-50 pointer-events-none" : "opacity-100"}`}>
+      <main className={`flex-1 w-full max-w-[1400px] mx-auto p-4 sm:p-6 transition-opacity duration-300 ${isFiltering ? "opacity-50 pointer-events-none" : "opacity-100"}`}>
         {isDemoMode ? (
           <section className={`${PANEL_SOFT_CLASS} p-4 mb-6`}>
             <p className="text-sm text-slate-300">
@@ -1404,7 +1587,7 @@ export default function Dashboard() {
           </section>
         ) : (
           <section className={`${PANEL_CLASS} p-4 mb-6`}>
-          <div className="flex items-center justify-between gap-4 mb-4">
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-4">
             <h3 className="font-bold text-slate-100 flex items-center gap-2">
               <Upload size={18} className="text-cyan-300" />
               Upload de Processo e Enriquecimento
@@ -1422,7 +1605,7 @@ export default function Dashboard() {
 
           <div className="grid md:grid-cols-6 gap-3 items-end">
             <div className="md:col-span-2">
-              <label className="text-xs font-semibold text-slate-400 uppercase">Arquivo do processo</label>
+              <label className="text-xs font-semibold text-slate-300 uppercase">Arquivo do processo</label>
               <input
                 type="file"
                 className="mt-1 block w-full text-sm text-slate-300 file:mr-3 file:py-2 file:px-3 file:rounded-md file:border file:border-slate-700 file:bg-slate-900 file:text-cyan-200 hover:file:bg-slate-800"
@@ -1438,11 +1621,11 @@ export default function Dashboard() {
           </div>
           <div className="grid md:grid-cols-6 gap-3 items-end mt-3">
             <InputField label="Valor causa (R$)" value={uploadForm.claim_value} onChange={(value) => setUploadForm((s) => ({ ...s, claim_value: value }))} />
-            <div className="md:col-span-5 flex justify-end">
+            <div className="md:col-span-5 flex justify-stretch md:justify-end">
               <Button
                 onClick={() => uploadMutation.mutate()}
                 disabled={uploadMutation.isPending || extractPreviewMutation.isPending || !uploadFile}
-                className="bg-cyan-500 hover:bg-cyan-400 text-slate-950 gap-2 h-[38px] px-6 font-bold"
+                className="h-[38px] w-full gap-2 bg-cyan-500 px-6 font-bold text-slate-950 hover:bg-cyan-400 md:w-auto"
               >
                 <Upload size={16} />
                 {extractPreviewMutation.isPending ? "Extraindo..." : uploadMutation.isPending ? "Enviando..." : "Enviar para Analise"}
@@ -1451,38 +1634,47 @@ export default function Dashboard() {
           </div>
 
           <div className="mt-5 pt-4 border-t border-slate-800">
-            <p className="text-xs font-semibold text-slate-400 uppercase mb-3">Cadastro de fonte pública</p>
+            <p className="text-xs font-semibold text-slate-300 uppercase mb-3">Cadastro de fonte pública</p>
             <div className="grid md:grid-cols-6 gap-3 items-end">
               <InputField label="Nome da fonte" value={sourceForm.name} onChange={(value) => setSourceForm((s) => ({ ...s, name: value }))} />
               <div className="md:col-span-3">
                 <InputField label="URL da API pública" value={sourceForm.base_url} onChange={(value) => setSourceForm((s) => ({ ...s, base_url: value }))} />
               </div>
               <InputField label="Tribunal (opcional)" value={sourceForm.tribunal} onChange={(value) => setSourceForm((s) => ({ ...s, tribunal: value }))} />
-              <div className="flex justify-end">
-                <Button onClick={() => sourceMutation.mutate()} disabled={sourceMutation.isPending} variant="outline" className="h-[38px] gap-2 border-slate-700 bg-slate-900/50 text-slate-100 hover:bg-slate-800">
+              <div className="flex justify-stretch md:justify-end">
+                <Button
+                  onClick={() => sourceMutation.mutate()}
+                  disabled={sourceMutation.isPending}
+                  variant="outline"
+                  className="h-[38px] w-full gap-2 border-slate-700 bg-slate-900/50 text-slate-100 hover:bg-slate-800 md:w-auto"
+                >
                   {sourceMutation.isPending ? "Salvando..." : "Salvar Fonte"}
                 </Button>
               </div>
             </div>
           </div>
 
-          <div className="mt-5 border-t border-slate-800 pt-4">
+          <div className="mt-5 border-t border-slate-200 pt-4 dark:border-slate-800">
             <div className="mb-3 flex items-center justify-between gap-3">
-              <p className="text-xs font-semibold uppercase text-slate-400">Análises AI dos seus casos</p>
+              <p className="text-xs font-semibold uppercase text-slate-300">Análises AI dos seus casos</p>
               {isCasePollingBoosted ? (
-                <span className="rounded-full border border-cyan-400/40 bg-cyan-500/15 px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-cyan-200">
+                <span className="rounded-full border border-cyan-300 bg-cyan-100 px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-cyan-800 dark:border-cyan-400/40 dark:bg-cyan-500/15 dark:text-cyan-200">
                   Monitoramento intensivo ativo
                 </span>
               ) : null}
             </div>
             {userCasesQuery.isLoading ? (
-              <div className="rounded-xl border border-slate-800 bg-slate-900/40 px-4 py-5 text-sm text-slate-300">Carregando status das análises...</div>
+              <div className="rounded-xl border border-slate-200 bg-white px-4 py-5 text-sm text-slate-600 dark:border-slate-800 dark:bg-slate-900/40 dark:text-slate-300">
+                Carregando status das análises...
+              </div>
             ) : userCasesQuery.isError ? (
               <div className="rounded-xl border border-red-500/30 bg-red-950/30 px-4 py-5 text-sm text-red-200">
                 Falha ao carregar casos: {userCasesQuery.error instanceof Error ? userCasesQuery.error.message : "erro desconhecido"}
               </div>
             ) : userCases.length === 0 ? (
-              <div className="rounded-xl border border-slate-800 bg-slate-900/40 px-4 py-5 text-sm text-slate-300">Nenhum caso enviado ainda.</div>
+              <div className="rounded-xl border border-slate-200 bg-white px-4 py-5 text-sm text-slate-600 dark:border-slate-800 dark:bg-slate-900/40 dark:text-slate-300">
+                Nenhum caso enviado ainda.
+              </div>
             ) : (
               <div className="space-y-2">
                 {userCases.slice(0, 8).map((item) => {
@@ -1497,11 +1689,11 @@ export default function Dashboard() {
                   const processLabel = item.process_number?.trim() ? item.process_number : `Caso ${item.case_id.slice(0, 8)}`;
 
                   return (
-                    <div key={item.case_id} className="rounded-xl border border-slate-800 bg-slate-900/45 px-4 py-3">
+                    <div key={item.case_id} className="rounded-xl border border-slate-200 bg-white px-4 py-3 dark:border-slate-800 dark:bg-slate-900/45">
                       <div className="flex flex-wrap items-start justify-between gap-3">
                         <div>
-                          <p className="text-sm font-bold text-slate-100">{processLabel}</p>
-                          <p className="text-[11px] text-slate-400">
+                          <p className="text-sm font-bold text-slate-900 dark:text-slate-100">{processLabel}</p>
+                          <p className="text-[11px] text-slate-600 dark:text-slate-400">
                             {createdAtLabel ? `Enviado em ${createdAtLabel}` : "Data de envio indisponível"}
                             {processedAtLabel ? ` • Último processamento: ${processedAtLabel}` : ""}
                           </p>
@@ -1514,7 +1706,7 @@ export default function Dashboard() {
                             <Button
                               size="sm"
                               variant="outline"
-                              className="h-7 border-slate-700 bg-slate-900/60 px-3 text-[11px] font-bold text-slate-100 hover:bg-slate-800"
+                              className="h-7 border-slate-300 bg-white px-3 text-[11px] font-bold text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-900/60 dark:text-slate-100 dark:hover:bg-slate-800"
                               disabled={isReprocessingThisCase}
                               onClick={() => reprocessCaseMutation.mutate(item.case_id)}
                             >
@@ -1523,24 +1715,28 @@ export default function Dashboard() {
                           ) : null}
                         </div>
                       </div>
-                      <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-slate-300">
-                        <span className="rounded-md border border-slate-700 bg-slate-800/60 px-2 py-0.5">Êxito: {formatProbabilityPercent(item.success_probability)}</span>
-                        <span className="rounded-md border border-slate-700 bg-slate-800/60 px-2 py-0.5">Acordo: {formatProbabilityPercent(item.settlement_probability)}</span>
-                        <span className="rounded-md border border-slate-700 bg-slate-800/60 px-2 py-0.5">
+                      <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-slate-700 dark:text-slate-300">
+                        <span className="rounded-md border border-slate-300 bg-slate-100 px-2 py-0.5 dark:border-slate-700 dark:bg-slate-800/60">
+                          Êxito: {formatProbabilityPercent(item.success_probability)}
+                        </span>
+                        <span className="rounded-md border border-slate-300 bg-slate-100 px-2 py-0.5 dark:border-slate-700 dark:bg-slate-800/60">
+                          Acordo: {formatProbabilityPercent(item.settlement_probability)}
+                        </span>
+                        <span className="rounded-md border border-slate-300 bg-slate-100 px-2 py-0.5 dark:border-slate-700 dark:bg-slate-800/60">
                           Risco: {typeof item.risk_score === "number" && Number.isFinite(item.risk_score) ? `${Math.round(item.risk_score)} / 100` : "--"}
                         </span>
-                        <span className="rounded-md border border-slate-700 bg-slate-800/60 px-2 py-0.5">
+                        <span className="rounded-md border border-slate-300 bg-slate-100 px-2 py-0.5 dark:border-slate-700 dark:bg-slate-800/60">
                           Tentativas IA: {typeof item.ai_attempts === "number" ? item.ai_attempts : 0}
                         </span>
-                        <span className="rounded-md border border-cyan-500/35 bg-cyan-500/10 px-2 py-0.5 text-cyan-200">
+                        <span className="rounded-md border border-cyan-300 bg-cyan-100 px-2 py-0.5 text-cyan-800 dark:border-cyan-500/35 dark:bg-cyan-500/10 dark:text-cyan-200">
                           Progresso IA: {stageProgress}%
                         </span>
                       </div>
-                      <p className="mt-2 text-[11px] text-slate-300">{stageLabel}</p>
+                      <p className="mt-2 text-[11px] text-slate-700 dark:text-slate-300">{stageLabel}</p>
                       {retryAtLabel && item.ai_status === "failed_retryable" ? (
-                        <p className="mt-2 text-[11px] text-amber-200">Nova tentativa automática prevista para {retryAtLabel}.</p>
+                        <p className="mt-2 text-[11px] text-amber-700 dark:text-amber-200">Nova tentativa automática prevista para {retryAtLabel}.</p>
                       ) : null}
-                      {item.ai_last_error ? <p className="mt-2 text-[11px] text-red-200">Último erro: {item.ai_last_error}</p> : null}
+                      {item.ai_last_error ? <p className="mt-2 text-[11px] text-red-700 dark:text-red-200">Último erro: {item.ai_last_error}</p> : null}
                     </div>
                   );
                 })}
@@ -1550,7 +1746,7 @@ export default function Dashboard() {
           </section>
         )}
 
-        <div className={`${PANEL_SOFT_CLASS} p-4 flex flex-wrap gap-4 items-end mb-8`}>
+        <div className={`${PANEL_SOFT_CLASS} mb-8 grid gap-4 p-4 md:grid-cols-2 xl:grid-cols-6 xl:items-end`}>
           <FilterSelect
             label="Tribunal"
             value={draftFilters.tribunal}
@@ -1581,7 +1777,7 @@ export default function Dashboard() {
             options={FILTER_OPTIONS.periodo}
             onChange={(value) => setDraftFilters((prev) => ({ ...prev, periodo: value }))}
           />
-          <Button onClick={handleApplyFilters} className="bg-blue-600 hover:bg-blue-500 text-white gap-2 h-[38px] px-6">
+          <Button onClick={handleApplyFilters} className="h-[38px] w-full gap-2 bg-blue-600 px-6 text-white hover:bg-blue-500 xl:w-auto">
             <CheckSquare size={16} /> Aplicar Filtros
           </Button>
         </div>
@@ -1597,11 +1793,11 @@ export default function Dashboard() {
         ) : null}
 
         {dashboardQuery.isLoading && (
-          <div className={`${PANEL_SOFT_CLASS} p-8 text-slate-300`}>Carregando dashboard...</div>
+          <div className={`${PANEL_SOFT_CLASS} p-6 text-slate-300 sm:p-8`}>Carregando dashboard...</div>
         )}
 
         {dashboardQuery.isError && (
-          <div className="rounded-xl p-8 text-red-200 border border-red-500/30 bg-red-950/35">
+          <div className="rounded-xl border border-red-500/30 bg-red-950/35 p-6 text-red-200 sm:p-8">
             Falha ao carregar dashboard: {dashboardQuery.error instanceof Error ? dashboardQuery.error.message : "erro desconhecido"}
           </div>
         )}
@@ -1637,6 +1833,17 @@ export default function Dashboard() {
                 onDismissAlert={handleDismissAlert}
                 onPrimaryAlertAction={handlePrimaryAlertAction}
                 onOpenCardDetail={openCardDetail}
+              />
+            )}
+            {activeTab === "historico-uploads" && (
+              <UploadHistoryView
+                items={uploadHistoryItems}
+                isLoading={uploadHistoryQuery.isLoading}
+                isError={uploadHistoryQuery.isError}
+                errorMessage={uploadHistoryQuery.error instanceof Error ? uploadHistoryQuery.error.message : "erro desconhecido"}
+                onReprocessCase={(caseId: string) => reprocessCaseMutation.mutate(caseId)}
+                isReprocessingCaseId={reprocessCaseMutation.isPending ? reprocessCaseMutation.variables : null}
+                onOpenCompleteAnalysis={(item) => setSelectedHistoryCase(item)}
               />
             )}
           </>
@@ -1715,9 +1922,9 @@ export default function Dashboard() {
         <DialogContent
           className={
             selectedSimilarProcess
-              ? "max-w-5xl max-h-[90vh] overflow-y-auto border-slate-200 bg-slate-50 text-slate-900 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
+              ? "w-[calc(100%-1.5rem)] max-w-5xl max-h-[90vh] overflow-y-auto border-slate-200 bg-slate-50 text-slate-900 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
               : isScenarioDetailModal
-                ? "max-w-4xl border-slate-200 bg-slate-50 text-slate-900 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100 [&>button]:right-4 [&>button]:top-4 [&>button]:h-8 [&>button]:w-8 [&>button]:rounded-xl [&>button]:bg-slate-200 [&>button]:text-slate-700 [&>button]:opacity-100 [&>button]:hover:bg-slate-300 dark:[&>button]:bg-slate-800 dark:[&>button]:text-slate-200 dark:[&>button]:hover:bg-slate-700"
+                ? "w-[calc(100%-1.5rem)] max-w-4xl max-h-[90vh] overflow-y-auto border-slate-200 bg-slate-50 text-slate-900 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100 [&>button]:right-4 [&>button]:top-4 [&>button]:h-8 [&>button]:w-8 [&>button]:rounded-xl [&>button]:bg-slate-200 [&>button]:text-slate-700 [&>button]:opacity-100 [&>button]:hover:bg-slate-300 dark:[&>button]:bg-slate-800 dark:[&>button]:text-slate-200 dark:[&>button]:hover:bg-slate-700"
                 : "max-w-2xl border-slate-700 bg-slate-950 text-slate-100"
           }
         >
@@ -1726,15 +1933,15 @@ export default function Dashboard() {
           ) : isScenarioDetailModal ? (
             <div className="space-y-5">
               <DialogHeader className="border-b border-slate-200 pb-4 dark:border-slate-800">
-                <DialogTitle className="text-3xl font-black text-slate-900 dark:text-slate-100">{selectedCardDetail?.title || "Cenário"}</DialogTitle>
-                {selectedCardDetail?.description ? <DialogDescription className="text-base text-slate-500 dark:text-slate-400">{selectedCardDetail.description}</DialogDescription> : null}
+                <DialogTitle className="text-2xl font-black text-slate-900 dark:text-slate-100 sm:text-3xl">{selectedCardDetail?.title || "Cenário"}</DialogTitle>
+                {selectedCardDetail?.description ? <DialogDescription className="text-base text-slate-600 dark:text-slate-400">{selectedCardDetail.description}</DialogDescription> : null}
               </DialogHeader>
               <span className="inline-flex rounded-full bg-blue-100 px-4 py-1.5 text-sm font-bold text-blue-700 dark:bg-blue-500/20 dark:text-blue-200">{selectedCardDetail?.badgeLabel || "Detalhes"}</span>
               <div className="rounded-xl border border-slate-200 bg-slate-100 p-5 dark:border-slate-800 dark:bg-slate-900/60">
-                <p className="mb-2 text-[28px] font-black leading-none text-slate-700 dark:text-slate-100">{selectedCardDetail?.recommendationTitle || "Próximo passo recomendado:"}</p>
-                <p className="text-[19px] leading-relaxed text-slate-600 dark:text-slate-300">{selectedCardDetail?.recommendationText || ""}</p>
+                <p className="mb-2 text-2xl font-black leading-tight text-slate-700 dark:text-slate-100 sm:text-[28px]">{selectedCardDetail?.recommendationTitle || "Próximo passo recomendado:"}</p>
+                <p className="text-base leading-relaxed text-slate-600 dark:text-slate-300 sm:text-[19px]">{selectedCardDetail?.recommendationText || ""}</p>
               </div>
-              {selectedCardDetail?.sourceNote ? <p className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">{selectedCardDetail.sourceNote}</p> : null}
+              {selectedCardDetail?.sourceNote ? <p className="text-xs font-semibold uppercase tracking-wide text-slate-600 dark:text-slate-400">{selectedCardDetail.sourceNote}</p> : null}
             </div>
           ) : (
             <>
@@ -1750,6 +1957,39 @@ export default function Dashboard() {
                 ))}
               </div>
             </>
+          )}
+        </DialogContent>
+      </Dialog>
+      <Dialog
+        open={selectedHistoryCase !== null}
+        onOpenChange={(open) => {
+          if (open) return;
+          setSelectedHistoryCase(null);
+        }}
+      >
+        <DialogContent className="w-[calc(100%-1.5rem)] max-w-6xl max-h-[90vh] overflow-y-auto border-slate-200 bg-slate-50 text-slate-900 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100">
+          <DialogHeader className="border-b border-slate-200 pb-4 dark:border-slate-800">
+            <DialogTitle className="text-xl font-black sm:text-2xl">Visão Estratégica Completa do Upload</DialogTitle>
+            <DialogDescription className="text-slate-600 dark:text-slate-300">
+              {selectedHistoryCase
+                ? `${selectedHistoryCase.filename || "Arquivo"} • Processo ${selectedHistoryCase.process_number || selectedHistoryCase.case_id.slice(0, 8)}`
+                : ""}
+            </DialogDescription>
+          </DialogHeader>
+
+          {caseDashboardContextQuery.isLoading ? (
+            <div className="py-10 text-center text-sm text-slate-600 dark:text-slate-300">Carregando comparativos deste upload...</div>
+          ) : caseDashboardContextQuery.isError ? (
+            <div className="mt-4 rounded-xl border border-red-500/30 bg-red-950/30 p-4 text-sm text-red-200">
+              Falha ao carregar visão completa: {caseDashboardContextQuery.error instanceof Error ? caseDashboardContextQuery.error.message : "erro desconhecido"}
+            </div>
+          ) : caseDashboardContextQuery.data ? (
+            <UploadHistoryCompleteInsights
+              data={caseDashboardContextQuery.data}
+              caseItem={selectedHistoryCase}
+            />
+          ) : (
+            <div className="py-10 text-center text-sm text-slate-600 dark:text-slate-300">Sem dados de contexto para este upload.</div>
           )}
         </DialogContent>
       </Dialog>
@@ -1853,10 +2093,10 @@ function VisaoGeralView({
                 </ResponsiveContainer>
               </div>
               <div className="flex justify-center gap-6 mt-4">
-                <div className="flex items-center gap-2 text-[10px] font-bold text-slate-400 uppercase">
+                <div className="flex items-center gap-2 text-[10px] font-bold text-slate-300 uppercase">
                   <div className="w-3 h-3 rounded-full bg-cyan-400"></div> Processo Atual
                 </div>
-                <div className="flex items-center gap-2 text-[10px] font-bold text-slate-400 uppercase">
+                <div className="flex items-center gap-2 text-[10px] font-bold text-slate-300 uppercase">
                   <div className="w-3 h-3 rounded-full bg-slate-500"></div> Media do Cluster
                 </div>
               </div>
@@ -1923,7 +2163,7 @@ function VisaoGeralView({
               <h3 className="font-bold text-slate-100 flex items-center gap-2">
                 <ActivitySquare size={18} className="text-cyan-300" /> Atividade Semanal
               </h3>
-              <MoreHorizontal size={18} className="text-slate-500 cursor-pointer" />
+              <MoreHorizontal size={18} className="text-slate-300 cursor-pointer" />
             </div>
             <div className="h-[200px] w-full">
               <ResponsiveContainer width="100%" height="100%">
@@ -2010,7 +2250,7 @@ function InteligenciaView({
         </div>
       </section>
 
-      <section className={`${PANEL_CLASS} p-8`}>
+      <section className={`${PANEL_CLASS} p-5 sm:p-8`}>
         <div className="flex items-center gap-2 mb-8 text-slate-100">
           <ActivitySquare size={20} className="text-cyan-300" />
           <h3 className="font-bold uppercase tracking-tight text-sm">Mapa de Comportamento Judicial (Heatmap)</h3>
@@ -2018,7 +2258,7 @@ function InteligenciaView({
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
-              <tr className="text-slate-400 font-medium">
+              <tr className="text-slate-300 font-medium">
                 <th className="pb-4 text-left font-normal"></th>
                 {data.inteligencia.heatmap_columns.map((column, idx) => (
                   <th key={idx} className="pb-4 px-4 font-normal">
@@ -2050,7 +2290,7 @@ function InteligenciaView({
             </tbody>
           </table>
         </div>
-        <div className="flex justify-center gap-6 mt-12">
+        <div className="mt-8 flex flex-wrap justify-center gap-3 sm:mt-12 sm:gap-6">
           <HeatmapLegend color="bg-emerald-300 dark:bg-emerald-200" text="Alto (>80%)" />
           <HeatmapLegend color="bg-yellow-200 dark:bg-yellow-100" text="Medio-Alto (70-79%)" />
           <HeatmapLegend color="bg-orange-200 dark:bg-orange-100" text="Medio (60-69%)" />
@@ -2058,12 +2298,12 @@ function InteligenciaView({
         </div>
       </section>
 
-      <section className={`${PANEL_CLASS} p-8`}>
+      <section className={`${PANEL_CLASS} p-5 sm:p-8`}>
         <div className="flex items-center gap-2 mb-8 text-slate-100">
           <BarChart3 size={20} className="text-cyan-300" />
           <h3 className="font-bold uppercase tracking-tight text-sm">Benchmark vs Mercado</h3>
         </div>
-        <div className="grid md:grid-cols-3 gap-12 text-center">
+        <div className="grid gap-8 text-center md:grid-cols-3 md:gap-12">
           {data.inteligencia.benchmark.map((item, idx) => (
             <BenchmarkStat
               key={idx}
@@ -2157,12 +2397,12 @@ function SimulacoesView({
         ))}
       </div>
 
-      <div className={`${PANEL_CLASS} p-8`}>
+      <div className={`${PANEL_CLASS} p-5 sm:p-8`}>
         <div className="flex items-center gap-2 mb-12 text-slate-100">
           <Scale size={20} className="text-cyan-300" />
           <h3 className="font-bold uppercase tracking-tight text-sm">Comparativo de Impacto</h3>
         </div>
-        <div className="grid md:grid-cols-3 gap-12">
+        <div className="grid gap-8 md:grid-cols-3 md:gap-12">
           {data.simulacoes.impact_metrics.map((metric, idx) => (
             <ImpactMetric
               key={idx}
@@ -2191,6 +2431,470 @@ function SimulacoesView({
           ))}
         </div>
       </div>
+    </div>
+  );
+}
+
+function UploadHistoryView({
+  items,
+  isLoading,
+  isError,
+  errorMessage,
+  onReprocessCase,
+  isReprocessingCaseId,
+  onOpenCompleteAnalysis,
+}: {
+  items: UploadHistoryItem[];
+  isLoading: boolean;
+  isError: boolean;
+  errorMessage: string;
+  onReprocessCase: (caseId: string) => void;
+  isReprocessingCaseId: string | null;
+  onOpenCompleteAnalysis: (item: UploadHistoryItem) => void;
+}) {
+  const [searchTerm, setSearchTerm] = useState("");
+  const [statusFilter, setStatusFilter] = useState<"all" | "in_flight" | "completed" | "failed">("all");
+
+  const summary = useMemo(() => {
+    const completed = items.filter((item) => item.ai_status === "completed").length;
+    const inFlight = items.filter((item) => isCaseAIInFlight(item.ai_status)).length;
+    const requiresAttention = items.filter((item) => item.ai_status === "failed" || item.ai_status === "manual_review" || item.ai_status === "failed_retryable").length;
+    return { total: items.length, completed, inFlight, requiresAttention };
+  }, [items]);
+
+  const filteredItems = useMemo(() => {
+    const normalizedSearch = normalizeSearchText(searchTerm.trim());
+    return items.filter((item) => {
+      if (statusFilter === "in_flight" && !isCaseAIInFlight(item.ai_status)) return false;
+      if (statusFilter === "completed" && item.ai_status !== "completed") return false;
+      if (statusFilter === "failed" && !(item.ai_status === "failed" || item.ai_status === "manual_review" || item.ai_status === "failed_retryable")) return false;
+
+      if (!normalizedSearch) return true;
+      const searchableBlob = [
+        item.filename || "",
+        item.process_number || "",
+        item.case_title || "",
+        item.tribunal || "",
+        item.judge || "",
+        item.action_type || "",
+      ].join(" ");
+      return normalizeSearchText(searchableBlob).includes(normalizedSearch);
+    });
+  }, [items, searchTerm, statusFilter]);
+
+  const hasFilters = searchTerm.trim().length > 0 || statusFilter !== "all";
+
+  return (
+    <div className="animate-in fade-in slide-in-from-bottom-4 duration-500 space-y-8">
+      <div className="flex items-center gap-3 mb-2">
+        <div className="w-10 h-10 bg-cyan-500/20 border border-cyan-400/40 rounded-lg flex items-center justify-center">
+          <History className="text-cyan-200 w-6 h-6" />
+        </div>
+        <div>
+          <h2 className="text-2xl font-bold text-slate-100">Histórico de Uploads</h2>
+          <p className="text-sm text-slate-300">Arquivos enviados, campos extraídos e resultados de IA por processo.</p>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <div className={`${PANEL_SOFT_CLASS} p-4`}>
+          <p className="text-[10px] uppercase tracking-wider font-bold text-slate-300">Total de uploads</p>
+          <p className="mt-2 text-3xl font-black text-slate-100">{summary.total}</p>
+        </div>
+        <div className={`${PANEL_SOFT_CLASS} p-4`}>
+          <p className="text-[10px] uppercase tracking-wider font-bold text-slate-300">Concluídos</p>
+          <p className="mt-2 text-3xl font-black text-emerald-300">{summary.completed}</p>
+        </div>
+        <div className={`${PANEL_SOFT_CLASS} p-4`}>
+          <p className="text-[10px] uppercase tracking-wider font-bold text-slate-300">Em processamento</p>
+          <p className="mt-2 text-3xl font-black text-cyan-300">{summary.inFlight}</p>
+        </div>
+        <div className={`${PANEL_SOFT_CLASS} p-4`}>
+          <p className="text-[10px] uppercase tracking-wider font-bold text-slate-300">Exigem atenção</p>
+          <p className="mt-2 text-3xl font-black text-orange-300">{summary.requiresAttention}</p>
+        </div>
+      </div>
+
+      <div className={`${PANEL_SOFT_CLASS} p-4`}>
+        <div className="grid md:grid-cols-[minmax(0,1fr)_220px_auto] gap-3 items-end">
+          <div>
+            <label className="text-xs font-semibold text-slate-300 uppercase">Buscar no histórico</label>
+            <input
+              value={searchTerm}
+              onChange={(event) => setSearchTerm(event.target.value)}
+              placeholder="Arquivo, processo, tribunal, juiz..."
+              className="mt-1 h-[38px] w-full px-3 border border-slate-700 rounded-md bg-slate-900/70 text-sm text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-cyan-500/40"
+            />
+          </div>
+          <div>
+            <label className="text-xs font-semibold text-slate-300 uppercase">Status IA</label>
+            <select
+              value={statusFilter}
+              onChange={(event) => setStatusFilter(event.target.value as "all" | "in_flight" | "completed" | "failed")}
+              className="mt-1 h-[38px] w-full px-3 border border-slate-700 rounded-md bg-slate-900/70 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-cyan-500/40"
+            >
+              <option value="all">Todos</option>
+              <option value="in_flight">Em processamento</option>
+              <option value="completed">Concluídos</option>
+              <option value="failed">Com falha/revisão</option>
+            </select>
+          </div>
+          <div className="md:justify-self-end">
+            <Button
+              type="button"
+              variant="outline"
+              className="h-[38px] border-slate-700 bg-slate-900/50 text-slate-100 hover:bg-slate-800"
+              disabled={!hasFilters}
+              onClick={() => {
+                setSearchTerm("");
+                setStatusFilter("all");
+              }}
+            >
+              Limpar filtros
+            </Button>
+          </div>
+        </div>
+      </div>
+
+      {isLoading ? (
+        <div className={`${PANEL_SOFT_CLASS} p-6 text-sm text-slate-600 dark:text-slate-300`}>Carregando histórico de uploads...</div>
+      ) : isError ? (
+        <div className="rounded-xl border border-red-500/30 bg-red-950/30 px-4 py-5 text-sm text-red-200">Falha ao carregar histórico: {errorMessage}</div>
+      ) : filteredItems.length === 0 ? (
+        <div className={`${PANEL_SOFT_CLASS} p-6 text-sm text-slate-600 dark:text-slate-300`}>
+          {items.length === 0 ? "Nenhum upload registrado até o momento." : "Nenhum upload encontrado com os filtros aplicados."}
+        </div>
+      ) : (
+        <div className="space-y-4">
+          {filteredItems.map((item) => {
+            const statusMeta = getCaseAIStatusMeta(item.ai_status);
+            const createdAtLabel = formatDateTimeLabel(item.created_at);
+            const processedAtLabel = formatDateTimeLabel(item.ai_processed_at);
+            const retryAtLabel = formatDateTimeLabel(item.ai_next_retry_at);
+            const stageProgress = resolveCaseAIProgress(item);
+            const stageLabel = resolveCaseAIStageLabel(item);
+            const canReprocess = item.ai_status === "failed" || item.ai_status === "manual_review" || item.ai_status === "failed_retryable";
+            const isReprocessingThisCase = isReprocessingCaseId === item.case_id;
+            const extracted = item.generated_data?.extracted ?? {};
+            const keyFacts = Array.isArray(extracted.key_facts)
+              ? extracted.key_facts.filter((fact): fact is string => typeof fact === "string" && fact.trim().length > 0).slice(0, 3)
+              : [];
+            const deadlines = Array.isArray(extracted.deadlines)
+              ? extracted.deadlines.filter((deadline) => deadline && typeof deadline.label === "string" && deadline.label.trim().length > 0).slice(0, 3)
+              : [];
+            const analyzedInputFields = [
+              { label: "Arquivo", value: item.filename || "--" },
+              { label: "Formato", value: formatContentTypeLabel(item.content_type) },
+              { label: "Nº do processo", value: extracted.process_number || item.process_number || "--" },
+              { label: "Tribunal", value: extracted.tribunal || item.tribunal || "--" },
+              { label: "Juiz", value: extracted.judge || item.judge || "--" },
+              { label: "Tipo da ação", value: extracted.action_type || item.action_type || "--" },
+              {
+                label: "Valor da causa",
+                value: formatCurrencyBRL(typeof extracted.claim_value === "number" ? extracted.claim_value : item.claim_value),
+              },
+              { label: "Status processual", value: extracted.status || item.status || "--" },
+            ];
+            const populatedAnalyzedFields = analyzedInputFields.filter((entry) => entry.value !== "--" && entry.value !== "Não informado").length;
+            const aiMetricsCount = [
+              item.generated_data?.success_probability,
+              item.generated_data?.settlement_probability,
+              item.generated_data?.risk_score,
+              item.generated_data?.complexity_score,
+              item.generated_data?.expected_decision_months,
+            ].filter((value) => typeof value === "number" && Number.isFinite(value)).length;
+
+            return (
+              <article
+                key={item.case_id}
+                className={`${PANEL_SOFT_CLASS} cursor-pointer p-5 transition-colors hover:border-cyan-500/40`}
+                onClick={() => onOpenCompleteAnalysis(item)}
+              >
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <p className="text-base font-bold text-slate-900 dark:text-slate-100">{item.filename || "Arquivo não identificado"}</p>
+                    <p className="text-[12px] text-slate-300">
+                      Processo: {item.process_number || `Caso ${item.case_id.slice(0, 8)}`}
+                      {createdAtLabel ? ` • Enviado em ${createdAtLabel}` : ""}
+                      {processedAtLabel ? ` • Último processamento: ${processedAtLabel}` : ""}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <span className={`inline-flex rounded-full border px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider ${statusMeta.badge}`}>
+                      {statusMeta.label}
+                    </span>
+                    {canReprocess ? (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-7 border-slate-300 bg-white px-3 text-[11px] font-bold text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-900/60 dark:text-slate-100 dark:hover:bg-slate-800"
+                        disabled={isReprocessingThisCase}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          onReprocessCase(item.case_id);
+                        }}
+                      >
+                        {isReprocessingThisCase ? "Reprocessando..." : "Reprocessar AI"}
+                      </Button>
+                    ) : null}
+                  </div>
+                </div>
+
+                <div className="mt-3 flex flex-wrap gap-2 text-[11px] text-slate-700 dark:text-slate-300">
+                  <span className="rounded-md border border-slate-300 bg-slate-100 px-2 py-0.5 dark:border-slate-700 dark:bg-slate-800/60">Tribunal: {item.tribunal || "--"}</span>
+                  <span className="rounded-md border border-slate-300 bg-slate-100 px-2 py-0.5 dark:border-slate-700 dark:bg-slate-800/60">Juiz: {item.judge || "--"}</span>
+                  <span className="rounded-md border border-slate-300 bg-slate-100 px-2 py-0.5 dark:border-slate-700 dark:bg-slate-800/60">Tipo: {item.action_type || "--"}</span>
+                  <span className="rounded-md border border-slate-300 bg-slate-100 px-2 py-0.5 dark:border-slate-700 dark:bg-slate-800/60">Valor: {formatCurrencyBRL(item.claim_value)}</span>
+                  <span className="rounded-md border border-cyan-300 bg-cyan-100 px-2 py-0.5 text-cyan-800 dark:border-cyan-500/35 dark:bg-cyan-500/10 dark:text-cyan-200">Progresso IA: {stageProgress}%</span>
+                </div>
+
+                <div className="mt-3 h-1.5 w-full overflow-hidden rounded-full bg-slate-800/90">
+                  <div className="h-full rounded-full bg-cyan-400 transition-all duration-500" style={{ width: `${stageProgress}%` }} />
+                </div>
+                <p className="mt-2 text-[11px] text-slate-700 dark:text-slate-300">{stageLabel}</p>
+                {retryAtLabel && item.ai_status === "failed_retryable" ? (
+                  <p className="mt-1 text-[11px] text-amber-700 dark:text-amber-200">Nova tentativa automática prevista para {retryAtLabel}.</p>
+                ) : null}
+                {item.ai_last_error ? <p className="mt-1 text-[11px] text-red-700 dark:text-red-200">Último erro: {item.ai_last_error}</p> : null}
+
+                <div className="mt-4 rounded-lg border border-cyan-200 bg-cyan-50/70 p-3 dark:border-cyan-500/25 dark:bg-cyan-500/10">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <p className="text-[11px] font-bold uppercase tracking-wide text-cyan-800 dark:text-cyan-200">Dados usados na análise deste documento</p>
+                    <span className="rounded-full border border-cyan-300 bg-white px-2 py-0.5 text-[10px] font-bold text-cyan-700 dark:border-cyan-400/40 dark:bg-cyan-500/15 dark:text-cyan-200">
+                      {populatedAnalyzedFields}/{analyzedInputFields.length} campos preenchidos
+                    </span>
+                  </div>
+                  <p className="mt-2 text-xs text-slate-700 dark:text-slate-300">
+                    A IA gerou os resultados com base nestes dados deste upload específico.
+                  </p>
+                  <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+                    {analyzedInputFields.map((field) => (
+                      <div key={field.label} className="rounded-md border border-cyan-200/80 bg-white/85 p-2 dark:border-cyan-500/20 dark:bg-slate-900/40">
+                        <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-600 dark:text-slate-400">{field.label}</p>
+                        <p className="mt-1 break-all text-xs font-medium text-slate-800 dark:text-slate-200">{field.value}</p>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="mt-3 flex flex-wrap gap-2 text-[11px]">
+                    <span className="rounded-md border border-cyan-300 bg-white px-2 py-0.5 text-cyan-700 dark:border-cyan-500/30 dark:bg-slate-900/30 dark:text-cyan-200">
+                      Fatos-chave identificados: {keyFacts.length}
+                    </span>
+                    <span className="rounded-md border border-cyan-300 bg-white px-2 py-0.5 text-cyan-700 dark:border-cyan-500/30 dark:bg-slate-900/30 dark:text-cyan-200">
+                      Prazos identificados: {deadlines.length}
+                    </span>
+                    <span className="rounded-md border border-cyan-300 bg-white px-2 py-0.5 text-cyan-700 dark:border-cyan-500/30 dark:bg-slate-900/30 dark:text-cyan-200">
+                      Métricas calculadas: {aiMetricsCount}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="mt-4 grid md:grid-cols-2 gap-4">
+                  <div className="rounded-lg border border-slate-200 bg-white p-3 dark:border-slate-800 dark:bg-slate-900/45">
+                    <p className="text-[11px] font-bold uppercase tracking-wide text-slate-600 dark:text-slate-400">Resultado da extração automática</p>
+                    <div className="mt-2 space-y-1.5 text-sm text-slate-800 dark:text-slate-200">
+                      <p>Título: {extracted.title || item.case_title || "--"}</p>
+                      <p>Número: {extracted.process_number || item.process_number || "--"}</p>
+                      <p>Status: {extracted.status || item.status || "--"}</p>
+                      {keyFacts.length > 0 ? <p>Fatos-chave: {keyFacts.join(" • ")}</p> : null}
+                      {deadlines.length > 0 ? (
+                        <p>
+                          Prazos:{" "}
+                          {deadlines
+                            .map((deadline) => `${deadline.label}${deadline.due_date ? ` (${formatDateTimeLabel(deadline.due_date) || deadline.due_date})` : ""}`)
+                            .join(" • ")}
+                        </p>
+                      ) : null}
+                    </div>
+                  </div>
+
+                  <div className="rounded-lg border border-slate-200 bg-white p-3 dark:border-slate-800 dark:bg-slate-900/45">
+                    <p className="text-[11px] font-bold uppercase tracking-wide text-slate-600 dark:text-slate-400">Resultado da análise da IA</p>
+                    <div className="mt-2 space-y-1.5 text-sm text-slate-800 dark:text-slate-200">
+                      <p>Êxito: {formatProbabilityPercent(item.generated_data?.success_probability)}</p>
+                      <p>Acordo: {formatProbabilityPercent(item.generated_data?.settlement_probability)}</p>
+                      <p>Risco: {typeof item.generated_data?.risk_score === "number" ? `${Math.round(item.generated_data.risk_score)} / 100` : "--"}</p>
+                      <p>Complexidade: {typeof item.generated_data?.complexity_score === "number" ? `${Math.round(item.generated_data.complexity_score)} / 100` : "--"}</p>
+                      <p>Tempo estimado: {typeof item.generated_data?.expected_decision_months === "number" ? `${item.generated_data.expected_decision_months.toFixed(1)} meses` : "--"}</p>
+                    </div>
+                  </div>
+                </div>
+
+                {item.generated_data?.ai_summary ? (
+                  <div className="mt-4 rounded-lg border border-cyan-300 bg-cyan-50 p-3 dark:border-cyan-500/20 dark:bg-cyan-500/10">
+                    <p className="text-[11px] font-bold uppercase tracking-wide text-cyan-800 dark:text-cyan-200">Conclusão da IA para este documento</p>
+                    <p className="mt-1 text-sm text-slate-800 leading-relaxed dark:text-slate-200">{item.generated_data.ai_summary}</p>
+                  </div>
+                ) : null}
+
+                <div className="mt-4 flex justify-end">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="h-8 border-cyan-300 bg-cyan-50 px-3 text-[11px] font-bold text-cyan-800 hover:bg-cyan-100 dark:border-cyan-500/40 dark:bg-cyan-500/10 dark:text-cyan-100 dark:hover:bg-cyan-500/20"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onOpenCompleteAnalysis(item);
+                    }}
+                  >
+                    Abrir visão completa deste upload
+                  </Button>
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function UploadHistoryCompleteInsights({
+  data,
+  caseItem,
+}: {
+  data: DashboardData;
+  caseItem: UploadHistoryItem | null;
+}) {
+  return (
+    <div className="mt-5 space-y-6">
+      <section className="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900/60">
+        <p className="text-[11px] font-bold uppercase tracking-wide text-slate-600 dark:text-slate-400">Contexto aplicado automaticamente</p>
+        <div className="mt-2 flex flex-wrap gap-2 text-[11px]">
+          <span className="rounded-md border border-slate-300 bg-slate-100 px-2 py-0.5 dark:border-slate-700 dark:bg-slate-800/60">Tribunal: {data.filters.tribunal}</span>
+          <span className="rounded-md border border-slate-300 bg-slate-100 px-2 py-0.5 dark:border-slate-700 dark:bg-slate-800/60">Juiz: {data.filters.juiz}</span>
+          <span className="rounded-md border border-slate-300 bg-slate-100 px-2 py-0.5 dark:border-slate-700 dark:bg-slate-800/60">Tipo: {data.filters.tipo_acao}</span>
+          <span className="rounded-md border border-slate-300 bg-slate-100 px-2 py-0.5 dark:border-slate-700 dark:bg-slate-800/60">Faixa: {data.filters.faixa_valor}</span>
+          <span className="rounded-md border border-slate-300 bg-slate-100 px-2 py-0.5 dark:border-slate-700 dark:bg-slate-800/60">Período: {data.filters.periodo}</span>
+        </div>
+        {caseItem ? (
+          <p className="mt-2 text-xs text-slate-700 dark:text-slate-300">
+            Documento de referência: <strong>{caseItem.filename || "arquivo sem nome"}</strong>
+          </p>
+        ) : null}
+      </section>
+
+      <section className="space-y-3">
+        <h4 className="text-sm font-bold uppercase tracking-wide text-slate-700 dark:text-slate-300">Métricas principais</h4>
+        <div className="grid gap-3 md:grid-cols-3">
+          {data.visao_geral.stats.map((metric, idx) => (
+            <div key={`${metric.title}-${idx}`} className="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900/60">
+              <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500 dark:text-slate-400">{metric.title}</p>
+              <p className="mt-2 text-2xl font-black text-slate-900 dark:text-slate-100">{metric.value}</p>
+              <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">{metric.subtitle}</p>
+              <p className="mt-2 text-[11px] text-slate-500 dark:text-slate-400">{metric.footer}</p>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <section className="space-y-3">
+        <h4 className="text-sm font-bold uppercase tracking-wide text-slate-700 dark:text-slate-300">Scores e comparação de perfil</h4>
+        <div className="grid gap-3 md:grid-cols-4">
+          {data.visao_geral.scores.map((score, idx) => (
+            <div key={`${score.title}-${idx}`} className="rounded-xl border border-slate-200 bg-white p-4 text-center dark:border-slate-800 dark:bg-slate-900/60">
+              <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500 dark:text-slate-400">{score.title}</p>
+              <p className="mt-2 text-3xl font-black text-slate-900 dark:text-slate-100">{score.value}</p>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      <section className="space-y-3">
+        <h4 className="text-sm font-bold uppercase tracking-wide text-slate-700 dark:text-slate-300">Processos similares e benchmark</h4>
+        <div className="grid gap-4 lg:grid-cols-2">
+          <div className="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900/60">
+            <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500 dark:text-slate-400">Processos similares</p>
+            <div className="mt-3 space-y-2">
+              {data.inteligencia.similar_processes.length === 0 ? (
+                <p className="text-sm text-slate-600 dark:text-slate-300">Sem registros similares para este recorte.</p>
+              ) : (
+                data.inteligencia.similar_processes.map((item, idx) => (
+                  <div key={`${item.id}-${idx}`} className="rounded-lg border border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-900/70">
+                    <p className="text-xs font-bold text-slate-800 dark:text-slate-100">{item.id}</p>
+                    <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">
+                      Similaridade: {item.similarity} • Resultado: {item.result} • Tempo: {item.time}
+                    </p>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+
+          <div className="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900/60">
+            <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500 dark:text-slate-400">Benchmark vs Mercado</p>
+            <div className="mt-3 space-y-2">
+              {data.inteligencia.benchmark.map((item, idx) => (
+                <div key={`${item.label}-${idx}`} className="rounded-lg border border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-900/70">
+                  <p className="text-xs font-bold text-slate-800 dark:text-slate-100">{item.label}</p>
+                  <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">
+                    Seu escritório: {item.user}
+                    {item.unit || ""} • Mercado: {item.market}
+                    {item.unit || ""} • Tendência: {item.trend}
+                  </p>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section className="space-y-3">
+        <h4 className="text-sm font-bold uppercase tracking-wide text-slate-700 dark:text-slate-300">Simulações e cenários</h4>
+        <div className="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900/60">
+          <p className="text-sm text-slate-700 dark:text-slate-200">
+            <strong>Gêmeo digital:</strong> {data.simulacoes.description}
+          </p>
+          <div className="mt-3 grid gap-3 md:grid-cols-3">
+            {data.simulacoes.scenarios.map((scenario, idx) => (
+              <div key={`${scenario.title}-${idx}`} className="rounded-lg border border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-900/70">
+                <p className="text-xs font-bold text-slate-800 dark:text-slate-100">{scenario.title}</p>
+                <p className="mt-1 text-[11px] text-slate-500 dark:text-slate-400">{scenario.tag}</p>
+                <div className="mt-2 space-y-1">
+                  {scenario.data.map((entry, entryIdx) => (
+                    <p key={`${entry.label}-${entryIdx}`} className="text-xs text-slate-700 dark:text-slate-300">
+                      {entry.label}: {entry.val}
+                    </p>
+                  ))}
+                </div>
+                <p className="mt-2 text-[11px] text-slate-600 dark:text-slate-300">{scenario.footer}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      <section className="space-y-3">
+        <h4 className="text-sm font-bold uppercase tracking-wide text-slate-700 dark:text-slate-300">Alertas e insights históricos</h4>
+        <div className="grid gap-4 lg:grid-cols-2">
+          <div className="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900/60">
+            <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500 dark:text-slate-400">Alertas estratégicos</p>
+            <div className="mt-3 space-y-2">
+              {data.alertas.details.length === 0 ? (
+                <p className="text-sm text-slate-600 dark:text-slate-300">Nenhum alerta encontrado para este recorte.</p>
+              ) : (
+                data.alertas.details.slice(0, 6).map((alert, idx) => (
+                  <div key={`${alert.title}-${idx}`} className="rounded-lg border border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-900/70">
+                    <p className="text-xs font-bold text-slate-800 dark:text-slate-100">{alert.title}</p>
+                    <p className="mt-1 text-[11px] text-slate-600 dark:text-slate-300">{alert.desc}</p>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+
+          <div className="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900/60">
+            <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500 dark:text-slate-400">Insights narrativos</p>
+            <div className="mt-3 space-y-2">
+              {data.visao_geral.insights.slice(0, 3).map((insight, idx) => (
+                <div key={`${insight.title}-${idx}`} className="rounded-lg border border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-900/70">
+                  <p className="text-xs font-bold text-slate-800 dark:text-slate-100">{insight.title}</p>
+                  <p className="mt-1 text-[11px] text-slate-600 dark:text-slate-300">{insight.text}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </section>
     </div>
   );
 }
@@ -2275,7 +2979,7 @@ function AlertasView({
       </div>
 
       <div className="flex items-center justify-between gap-3">
-        <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">
+        <p className="text-xs font-semibold uppercase tracking-wider text-slate-300">
           {activeFilterLabel ? `Filtrando por ${activeFilterLabel}` : "Exibindo todos os alertas"}
         </p>
         {activeCategoryFilter && (
@@ -2334,35 +3038,35 @@ function SimilarProcessDetailContent({ detail }: { detail: SimilarProcessDetail 
   return (
     <div className="space-y-8 text-slate-900 dark:text-slate-100">
       <DialogHeader className="border-b border-slate-200 pb-4 dark:border-slate-800">
-        <DialogTitle className="text-4xl font-black text-slate-900 dark:text-slate-100 flex items-center gap-2">
+        <DialogTitle className="flex items-center gap-2 text-2xl font-black leading-tight text-slate-900 dark:text-slate-100 sm:text-4xl">
           <FileText size={22} className="text-slate-900 dark:text-slate-100" /> Processo {processLabel}
         </DialogTitle>
-        <DialogDescription className="text-sm text-slate-500 dark:text-slate-400">{detail.lgpdNotice}</DialogDescription>
+        <DialogDescription className="text-sm text-slate-600 dark:text-slate-400">{detail.lgpdNotice}</DialogDescription>
       </DialogHeader>
 
       <section className="grid md:grid-cols-2 gap-4">
         <div className="rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900/70">
-          <p className="text-xs font-bold uppercase text-slate-500 dark:text-slate-400 tracking-wider mb-2">Similaridade</p>
-          <p className="text-4xl font-black text-slate-900 dark:text-slate-100">{detail.similarity}</p>
+          <p className="text-xs font-bold uppercase text-slate-600 dark:text-slate-400 tracking-wider mb-2">Similaridade</p>
+          <p className="text-3xl font-black text-slate-900 dark:text-slate-100 sm:text-4xl">{detail.similarity}</p>
         </div>
         <div className="rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900/70">
-          <p className="text-xs font-bold uppercase text-slate-500 dark:text-slate-400 tracking-wider mb-2">Resultado</p>
-          <p className={`text-3xl font-black flex items-center gap-2 ${resultIsPositive ? "text-emerald-600 dark:text-emerald-300" : "text-amber-600 dark:text-amber-300"}`}>
+          <p className="text-xs font-bold uppercase text-slate-600 dark:text-slate-400 tracking-wider mb-2">Resultado</p>
+          <p className={`flex items-center gap-2 text-2xl font-black sm:text-3xl ${resultIsPositive ? "text-emerald-600 dark:text-emerald-300" : "text-amber-600 dark:text-amber-300"}`}>
             {resultIsPositive ? <CheckSquare size={20} /> : <AlertTriangle size={20} />} {detail.resultLabel}
           </p>
         </div>
         <div className="rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900/70">
-          <p className="text-xs font-bold uppercase text-slate-500 dark:text-slate-400 tracking-wider mb-2">Tempo de tramitação</p>
-          <p className="text-4xl font-black text-slate-900 dark:text-slate-100">{detail.time}</p>
+          <p className="text-xs font-bold uppercase text-slate-600 dark:text-slate-400 tracking-wider mb-2">Tempo de tramitação</p>
+          <p className="text-3xl font-black text-slate-900 dark:text-slate-100 sm:text-4xl">{detail.time}</p>
         </div>
         <div className="rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900/70">
-          <p className="text-xs font-bold uppercase text-slate-500 dark:text-slate-400 tracking-wider mb-2">Tipo de desfecho</p>
-          <p className="text-4xl font-black text-slate-900 dark:text-slate-100">{detail.closureType}</p>
+          <p className="text-xs font-bold uppercase text-slate-600 dark:text-slate-400 tracking-wider mb-2">Tipo de desfecho</p>
+          <p className="break-words text-2xl font-black text-slate-900 dark:text-slate-100 sm:text-4xl">{detail.closureType}</p>
         </div>
       </section>
 
       <section className="space-y-3">
-        <h3 className="text-3xl font-black text-slate-900 dark:text-slate-100 flex items-center gap-2">
+        <h3 className="flex items-center gap-2 text-xl font-black text-slate-900 dark:text-slate-100 sm:text-3xl">
           <CheckSquare size={20} /> Motivos de Similaridade
         </h3>
         <div className="rounded-xl border border-slate-200 bg-slate-100 p-6 dark:border-slate-800 dark:bg-slate-900/60">
@@ -2376,7 +3080,7 @@ function SimilarProcessDetailContent({ detail }: { detail: SimilarProcessDetail 
       </section>
 
       <section className="space-y-3">
-        <h3 className="text-3xl font-black text-slate-900 dark:text-slate-100 flex items-center gap-2">
+        <h3 className="flex items-center gap-2 text-xl font-black text-slate-900 dark:text-slate-100 sm:text-3xl">
           <Clock size={20} /> Linha do Tempo
         </h3>
         <div className="relative pl-8">
@@ -2385,9 +3089,9 @@ function SimilarProcessDetailContent({ detail }: { detail: SimilarProcessDetail 
             {detail.timeline.map((event, index) => (
               <div key={index} className="relative">
                 <span className="absolute -left-[28px] top-2 h-4 w-4 rounded-full bg-sky-500 ring-4 ring-sky-100 dark:ring-sky-900/60"></span>
-                <p className="text-sm font-bold text-slate-500 dark:text-slate-400">{event.date}</p>
+                <p className="text-sm font-bold text-slate-600 dark:text-slate-400">{event.date}</p>
                 <div className="mt-2 rounded-xl border border-slate-200 bg-slate-100 p-5 dark:border-slate-800 dark:bg-slate-900/60">
-                  <p className="text-2xl font-black text-slate-900 dark:text-slate-100 mb-2">{event.title}</p>
+                  <p className="mb-2 text-xl font-black text-slate-900 dark:text-slate-100 sm:text-2xl">{event.title}</p>
                   <p className="text-base text-slate-600 dark:text-slate-300">{event.description}</p>
                 </div>
               </div>
@@ -2397,7 +3101,7 @@ function SimilarProcessDetailContent({ detail }: { detail: SimilarProcessDetail 
       </section>
 
       <section className="space-y-3">
-        <h3 className="text-3xl font-black text-slate-900 dark:text-slate-100 flex items-center gap-2">
+        <h3 className="flex items-center gap-2 text-xl font-black text-slate-900 dark:text-slate-100 sm:text-3xl">
           <Database size={20} /> Padrão Decisório do Órgão Julgador
         </h3>
         <div className="rounded-xl border border-slate-200 bg-slate-100 p-6 dark:border-slate-800 dark:bg-slate-900/60">
@@ -2411,7 +3115,7 @@ function SimilarProcessDetailContent({ detail }: { detail: SimilarProcessDetail 
       </section>
 
       <section className="space-y-3">
-        <h3 className="text-3xl font-black text-slate-900 dark:text-slate-100 flex items-center gap-2">
+        <h3 className="flex items-center gap-2 text-xl font-black text-slate-900 dark:text-slate-100 sm:text-3xl">
           <AlertTriangle size={20} /> Riscos Detectados
         </h3>
         <div className={`rounded-xl border p-6 ${riskTone.container}`}>
@@ -2424,7 +3128,7 @@ function SimilarProcessDetailContent({ detail }: { detail: SimilarProcessDetail 
       </section>
 
       <section className="space-y-3">
-        <h3 className="text-3xl font-black text-slate-900 dark:text-slate-100 flex items-center gap-2">
+        <h3 className="flex items-center gap-2 text-xl font-black text-slate-900 dark:text-slate-100 sm:text-3xl">
           <Zap size={20} /> Recomendações Acionáveis
         </h3>
         <div className="space-y-3">
@@ -2440,25 +3144,25 @@ function SimilarProcessDetailContent({ detail }: { detail: SimilarProcessDetail 
       </section>
 
       <section className="space-y-3">
-        <h3 className="text-3xl font-black text-slate-900 dark:text-slate-100 flex items-center gap-2">
+        <h3 className="flex items-center gap-2 text-xl font-black text-slate-900 dark:text-slate-100 sm:text-3xl">
           <Scale size={20} /> Comparação com Seu Processo
         </h3>
         <div className="grid md:grid-cols-2 gap-4">
           <div className="rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900/70">
-            <p className="text-xs font-bold uppercase text-slate-500 dark:text-slate-400 tracking-wider mb-2">Similaridade geral</p>
-            <p className="text-4xl font-black text-slate-900 dark:text-slate-100">{detail.comparison.similarity}</p>
+            <p className="text-xs font-bold uppercase text-slate-600 dark:text-slate-400 tracking-wider mb-2">Similaridade geral</p>
+            <p className="text-3xl font-black text-slate-900 dark:text-slate-100 sm:text-4xl">{detail.comparison.similarity}</p>
           </div>
           <div className="rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900/70">
-            <p className="text-xs font-bold uppercase text-slate-500 dark:text-slate-400 tracking-wider mb-2">Probabilidade de êxito similar</p>
-            <p className="text-4xl font-black text-emerald-600 dark:text-emerald-300">{detail.comparison.successProbability}</p>
+            <p className="text-xs font-bold uppercase text-slate-600 dark:text-slate-400 tracking-wider mb-2">Probabilidade de êxito similar</p>
+            <p className="text-3xl font-black text-emerald-600 dark:text-emerald-300 sm:text-4xl">{detail.comparison.successProbability}</p>
           </div>
           <div className="rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900/70">
-            <p className="text-xs font-bold uppercase text-slate-500 dark:text-slate-400 tracking-wider mb-2">Tempo estimado similar</p>
-            <p className="text-4xl font-black text-slate-900 dark:text-slate-100">{detail.comparison.estimatedTime}</p>
+            <p className="text-xs font-bold uppercase text-slate-600 dark:text-slate-400 tracking-wider mb-2">Tempo estimado similar</p>
+            <p className="text-3xl font-black text-slate-900 dark:text-slate-100 sm:text-4xl">{detail.comparison.estimatedTime}</p>
           </div>
           <div className="rounded-xl border border-slate-200 bg-white p-5 dark:border-slate-800 dark:bg-slate-900/70">
-            <p className="text-xs font-bold uppercase text-slate-500 dark:text-slate-400 tracking-wider mb-2">Recomendação principal</p>
-            <p className="text-4xl font-black text-sky-600 dark:text-sky-300">{detail.comparison.primaryRecommendation}</p>
+            <p className="text-xs font-bold uppercase text-slate-600 dark:text-slate-400 tracking-wider mb-2">Recomendação principal</p>
+            <p className="break-words text-2xl font-black text-sky-600 dark:text-sky-300 sm:text-4xl">{detail.comparison.primaryRecommendation}</p>
           </div>
         </div>
       </section>
@@ -2469,11 +3173,11 @@ function SimilarProcessDetailContent({ detail }: { detail: SimilarProcessDetail 
 function InputField({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {
   return (
     <div className="flex flex-col gap-1">
-      <label className="text-xs font-semibold text-slate-400 uppercase">{label}</label>
+      <label className="text-xs font-semibold text-slate-300 uppercase">{label}</label>
       <input
         value={value}
         onChange={(event) => onChange(event.target.value)}
-        className="h-[38px] px-3 border border-slate-700 rounded-md bg-slate-900/70 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/40"
+        className="h-[38px] px-3 border border-slate-700 rounded-md bg-slate-900/70 text-sm text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-cyan-500/40"
       />
     </div>
   );
@@ -2491,20 +3195,20 @@ function SimilarProcessCard({ id, similarity, result, time, type, resultColor = 
         <span className="text-xs font-black text-slate-100 tracking-tight">{id}</span>
         <span className={`text-[10px] font-bold px-2 py-1 rounded-full uppercase tracking-widest ${tone.badge}`}>{similarity} Similar</span>
       </div>
-      <div className="grid grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3 sm:gap-4">
         <div>
-          <p className="text-[10px] text-slate-400 font-bold uppercase mb-2">Resultado</p>
+          <p className="text-[10px] text-slate-300 font-bold uppercase mb-2">Resultado</p>
           <div className="flex items-center gap-1">
             <div className={`w-2 h-2 rounded-full ${tone.dot}`}></div>
             <span className={`text-xs font-bold ${tone.text}`}>{result}</span>
           </div>
         </div>
         <div>
-          <p className="text-[10px] text-slate-400 font-bold uppercase mb-2">Tempo</p>
+          <p className="text-[10px] text-slate-300 font-bold uppercase mb-2">Tempo</p>
           <span className="text-xs font-bold text-slate-200">{time}</span>
         </div>
         <div>
-          <p className="text-[10px] text-slate-400 font-bold uppercase mb-2">Tipo</p>
+          <p className="text-[10px] text-slate-300 font-bold uppercase mb-2">Tipo</p>
           <span className="text-xs font-bold text-slate-200">{type}</span>
         </div>
       </div>
@@ -2541,7 +3245,7 @@ function HeatmapLegend({ color, text }: any) {
   return (
     <div className="flex items-center gap-2">
       <div className={`w-3 h-3 rounded ${color}`}></div>
-      <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{text}</span>
+      <span className="text-[10px] font-bold text-slate-300 uppercase tracking-widest">{text}</span>
     </div>
   );
 }
@@ -2550,19 +3254,19 @@ function BenchmarkStat({ label, user, market, trend, trendColor, unit = "", onCl
   const tone = trendTone(trendColor);
   return (
     <button type="button" onClick={onClick} className="text-left md:text-center hover:opacity-95 transition-opacity">
-      <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest mb-6">{label}</p>
-      <div className="flex items-center justify-center gap-8 mb-4">
+      <p className="text-[10px] text-slate-300 font-bold uppercase tracking-widest mb-6">{label}</p>
+      <div className="mb-4 flex flex-wrap items-center justify-center gap-4 sm:gap-8">
         <div>
           <div className="text-3xl font-black text-cyan-300 mb-1">{user}</div>
-          <p className="text-[9px] font-bold text-slate-400 uppercase">Seu Escritorio</p>
+          <p className="text-[9px] font-bold text-slate-300 uppercase">Seu Escritorio</p>
         </div>
-        <div className="text-slate-500 font-light text-xl">vs</div>
+        <div className="text-slate-300 font-light text-xl">vs</div>
         <div>
           <div className="text-3xl font-black text-slate-100 mb-1">
             {market}
             {unit}
           </div>
-          <p className="text-[9px] font-bold text-slate-400 uppercase">Mercado</p>
+          <p className="text-[9px] font-bold text-slate-300 uppercase">Mercado</p>
         </div>
       </div>
       <div className={`inline-flex items-center gap-2 px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider ${tone}`}>
@@ -2594,13 +3298,13 @@ function ScenarioCard({ id, title, tag, tagColor, data, footer, onClick, isFocus
         <div className="space-y-6 flex-1">
           {data.map((d: any, i: number) => (
             <div key={i} className="flex justify-between items-center">
-              <span className="text-xs text-slate-400 font-medium">{d.label}</span>
+              <span className="text-xs text-slate-300 font-medium">{d.label}</span>
               <span className={`text-sm font-black ${valueTone(d.color)}`}>{d.val}</span>
             </div>
           ))}
         </div>
         <div className="mt-8 pt-6 border-t border-slate-800">
-          <p className="text-[11px] text-slate-400 leading-relaxed italic">{footer}</p>
+          <p className="text-[11px] text-slate-300 leading-relaxed italic">{footer}</p>
         </div>
       </div>
     </button>
@@ -2622,7 +3326,7 @@ function ImpactMetric({ label, icon, title, val, trend, trendBg, onClick }: any)
       aria-label={`${label}: ${title}. Clique para ver detalhes`}
       className="group w-full rounded-2xl border border-slate-800/80 bg-slate-900/45 p-6 text-center cursor-pointer transition-all duration-200 hover:-translate-y-1 hover:border-cyan-400/60 hover:bg-slate-900/70 hover:shadow-[0_14px_28px_rgba(34,211,238,0.14)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/80 focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950"
     >
-      <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest mb-6">{label}</p>
+      <p className="text-[10px] text-slate-300 font-bold uppercase tracking-widest mb-6">{label}</p>
       <div className="w-12 h-12 bg-slate-800 rounded-full flex items-center justify-center mx-auto mb-4 transition-colors duration-200 group-hover:bg-slate-700">
         {iconFromKey(icon)}
       </div>
@@ -2650,7 +3354,7 @@ function AlertCountCard({ count, label, color, isActive = false, onClick }: any)
       }`}
     >
       <div className={`text-4xl font-black mb-2 ${tone}`}>{count}</div>
-      <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{label}</div>
+      <div className="text-[10px] font-bold text-slate-300 uppercase tracking-widest">{label}</div>
     </button>
   );
 }
@@ -2666,13 +3370,13 @@ function DetailedAlert({ type, title, time, desc, onCardClick, onView, onResolve
   return (
     <div className={`rounded-xl border ${c.border} overflow-hidden shadow-sm flex bg-slate-900/65 cursor-pointer`} onClick={onCardClick}>
       <div className={`w-1.5 ${c.line}`}></div>
-      <div className="p-6 flex gap-6 items-start flex-1">
+      <div className="flex flex-1 items-start gap-4 p-4 sm:gap-6 sm:p-6">
         <div className={`${c.bg} p-3 rounded-lg ${c.color} shrink-0`}>{c.icon}</div>
         <div className="flex-1">
-          <div className="flex justify-between items-center mb-3">
-            <div className="flex items-center gap-3">
+          <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
+            <div className="flex flex-wrap items-center gap-2 sm:gap-3">
               <span className={`${c.tagBg} text-white text-[9px] font-black px-2 py-0.5 rounded`}>{c.tag}</span>
-              <span className="text-[10px] text-slate-400 font-medium">{time}</span>
+              <span className="text-[10px] text-slate-300 font-medium">{time}</span>
             </div>
             <div className="flex gap-2">
               <Button
@@ -2682,7 +3386,7 @@ function DetailedAlert({ type, title, time, desc, onCardClick, onView, onResolve
                 }}
                 variant="ghost"
                 size="icon"
-                className="h-6 w-6 text-slate-500 hover:text-slate-300"
+                className="h-6 w-6 text-slate-300 hover:text-slate-200"
               >
                 <Eye size={14} />
               </Button>
@@ -2693,22 +3397,22 @@ function DetailedAlert({ type, title, time, desc, onCardClick, onView, onResolve
                 }}
                 variant="ghost"
                 size="icon"
-                className="h-6 w-6 text-slate-500 hover:text-slate-300"
+                className="h-6 w-6 text-slate-300 hover:text-slate-200"
               >
                 <CheckSquare size={14} />
               </Button>
             </div>
           </div>
-          <h4 className="font-black text-slate-100 mb-2">{title}</h4>
-          <p className="text-xs text-slate-300 leading-relaxed mb-6">{desc}</p>
-          <div className="flex gap-3">
+          <h4 className="mb-2 font-black text-slate-100">{title}</h4>
+          <p className="mb-6 text-xs leading-relaxed text-slate-300">{desc}</p>
+          <div className="flex flex-wrap gap-2 sm:gap-3">
             <Button
               onClick={(event) => {
                 event.stopPropagation();
                 onPrimaryAction();
               }}
               size="sm"
-              className="bg-cyan-500 text-slate-950 h-8 text-[11px] px-4 font-bold gap-2 hover:bg-cyan-400"
+              className="h-8 min-w-[120px] gap-2 bg-cyan-500 px-4 text-[11px] font-bold text-slate-950 hover:bg-cyan-400"
             >
               <Search size={14} /> Ver Detalhes
             </Button>
@@ -2719,7 +3423,7 @@ function DetailedAlert({ type, title, time, desc, onCardClick, onView, onResolve
               }}
               size="sm"
               variant="outline"
-              className="h-8 text-[11px] px-4 font-bold text-slate-300 border-slate-700 bg-slate-900/40 hover:bg-slate-800"
+              className="h-8 min-w-[120px] border-slate-700 bg-slate-900/40 px-4 text-[11px] font-bold text-slate-300 hover:bg-slate-800"
             >
               Dispensar
             </Button>
@@ -2736,7 +3440,7 @@ function ScoreCardCircle({ title, value, icon, color, onClick }: any) {
     <button type="button" onClick={onClick} className="flex flex-col items-center text-center group cursor-pointer">
       <div className={`mb-6 transition-transform group-hover:scale-110 duration-300 ${tone.text}`}>{icon}</div>
       <div className="text-4xl font-black text-slate-100 mb-1">{value}</div>
-      <div className="text-[9px] font-black text-slate-400 uppercase tracking-[0.2em]">{title}</div>
+      <div className="text-[9px] font-black text-slate-300 uppercase tracking-[0.2em]">{title}</div>
       <div className={`w-full h-1 mt-6 rounded-full bg-slate-800 overflow-hidden`}>
         <div className={`h-full ${tone.bar}`} style={{ width: `${value}%` }}></div>
       </div>
@@ -2748,7 +3452,7 @@ function TabButton({ active, icon, text, onClick, badgeCount = 0 }: any) {
   return (
     <button
       onClick={onClick}
-      className={`flex min-h-[40px] w-full items-center justify-center gap-2 rounded-md px-3 py-2 text-[12px] font-medium leading-tight transition-all sm:text-[13px] lg:whitespace-nowrap ${
+      className={`flex min-h-[40px] w-full items-center justify-center gap-2 rounded-md px-3 py-2 text-[12px] font-medium leading-tight transition-all sm:text-[13px] lg:w-auto lg:min-h-[36px] lg:flex-none lg:whitespace-nowrap ${
         active ? "bg-blue-600 text-white shadow-sm" : "text-slate-700 hover:bg-slate-200 hover:text-slate-900 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-white"
       }`}
     >
@@ -2818,10 +3522,10 @@ function ProcessingProgressBanner({
 
 function FilterSelect({ label, value, options, onChange }: { label: string; value: string; options: string[]; onChange: (value: string) => void }) {
   return (
-    <div className="flex flex-col gap-1">
-      <label className="text-xs font-semibold text-slate-400 uppercase">{label}</label>
+    <div className="flex w-full flex-col gap-1">
+      <label className="text-xs font-semibold text-slate-300 uppercase">{label}</label>
       <select
-        className="h-[38px] px-3 border border-slate-700 rounded-md bg-slate-900/70 min-w-[170px] text-sm text-slate-100 cursor-pointer hover:border-cyan-400"
+        className="h-[38px] w-full min-w-0 rounded-md border border-slate-700 bg-slate-900/70 px-3 text-sm text-slate-100 cursor-pointer hover:border-cyan-400 sm:min-w-[170px]"
         value={value}
         onChange={(event) => onChange(event.target.value)}
       >
@@ -2847,14 +3551,14 @@ function MetricCard({ title, value, subtitle, footer, color, updated, warning, o
       <div className="mb-4">
         <div className="flex items-center gap-2 mb-4">
           <FileText className={`w-4 h-4 text-cyan-300`} />
-          <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wide">{title}</h4>
+          <h4 className="text-xs font-bold text-slate-300 uppercase tracking-wide">{title}</h4>
         </div>
         <div className="text-4xl font-black text-slate-100 mb-2">{value}</div>
         <div className="text-sm text-slate-300 font-medium">{subtitle}</div>
       </div>
 
       <div className="pt-4 border-t border-slate-800 flex flex-col gap-2">
-        <div className="flex items-center gap-2 text-[10px] font-bold text-slate-400 uppercase tracking-tight">
+        <div className="flex items-center gap-2 text-[10px] font-bold text-slate-300 uppercase tracking-tight">
           <Database size={12} className={`text-cyan-300`} /> {footer}
         </div>
         {updated && <div className="flex items-center gap-2 text-[10px] font-bold text-emerald-400 uppercase">{updated}</div>}

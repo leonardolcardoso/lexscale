@@ -123,7 +123,7 @@ export function Navbar() {
                 {item.label}
               </a>
             ))}
-            <div className="flex gap-2 pt-2">
+            <div className="flex flex-col gap-2 pt-2 sm:flex-row">
               <Link href="/auth?tab=login" className="flex-1" onClick={() => setMenuOpen(false)}>
                 <Button variant="outline" className="w-full rounded-xl font-semibold border-slate-700 bg-slate-900 text-slate-100 hover:bg-slate-800">
                   Login

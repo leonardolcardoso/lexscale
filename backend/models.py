@@ -105,6 +105,7 @@ class ProcessCase(Base):
     status = Column(Text, nullable=True, default="novo")
     extracted_fields = Column(JSON, nullable=True)
     ai_summary = Column(Text, nullable=True)
+    dashboard_snapshot = Column(JSON, nullable=True)
     success_probability = Column(Float, nullable=True)
     settlement_probability = Column(Float, nullable=True)
     expected_decision_months = Column(Float, nullable=True)

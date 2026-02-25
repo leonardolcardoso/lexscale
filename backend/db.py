@@ -71,6 +71,9 @@ def init_database() -> None:
                 text("ALTER TABLE IF EXISTS process_cases ADD COLUMN IF NOT EXISTS ai_status TEXT"),
             )
             connection.execute(
+                text("ALTER TABLE IF EXISTS process_cases ADD COLUMN IF NOT EXISTS dashboard_snapshot JSON"),
+            )
+            connection.execute(
                 text("ALTER TABLE IF EXISTS process_cases ADD COLUMN IF NOT EXISTS ai_stage TEXT"),
             )
             connection.execute(

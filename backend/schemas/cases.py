@@ -89,3 +89,37 @@ class CaseAIStatusResponse(BaseModel):
     ai_next_retry_at: Optional[datetime] = None
     ai_processed_at: Optional[datetime] = None
     ai_last_error: Optional[str] = None
+
+
+class UploadHistoryGeneratedData(BaseModel):
+    extracted: CaseExtractionPayload = Field(default_factory=CaseExtractionPayload)
+    success_probability: Optional[float] = None
+    settlement_probability: Optional[float] = None
+    expected_decision_months: Optional[float] = None
+    risk_score: Optional[float] = None
+    complexity_score: Optional[float] = None
+    ai_summary: Optional[str] = None
+
+
+class UploadHistoryItem(BaseModel):
+    case_id: str
+    process_number: str
+    case_title: Optional[str] = None
+    filename: Optional[str] = None
+    content_type: Optional[str] = None
+    tribunal: Optional[str] = None
+    judge: Optional[str] = None
+    action_type: Optional[str] = None
+    claim_value: Optional[float] = None
+    status: Optional[str] = None
+    ai_status: str = "queued"
+    ai_attempts: int = 0
+    ai_stage: str = "extraction"
+    ai_stage_label: Optional[str] = None
+    ai_progress_percent: int = 0
+    ai_stage_updated_at: Optional[datetime] = None
+    ai_next_retry_at: Optional[datetime] = None
+    ai_processed_at: Optional[datetime] = None
+    ai_last_error: Optional[str] = None
+    created_at: datetime
+    generated_data: UploadHistoryGeneratedData = Field(default_factory=UploadHistoryGeneratedData)

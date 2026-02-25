@@ -1,4 +1,4 @@
-import type { DashboardData, DashboardFilters } from "@/types/dashboard";
+import type { DashboardData, DashboardFilters, UploadHistoryItem } from "@/types/dashboard";
 
 const TRIBUNAL_FACTORS: Record<string, number> = {
   "Todos os Tribunais": 1,
@@ -525,4 +525,197 @@ export function buildMockDashboardData(filters: DashboardFilters): DashboardData
       details: alertDetails,
     },
   };
+}
+
+function toIso(date: Date): string {
+  return date.toISOString();
+}
+
+function buildAiSummary(actionType: string, tribunal: string, claimValue: number): string {
+  const formattedValue = new Intl.NumberFormat("pt-BR", {
+    style: "currency",
+    currency: "BRL",
+    maximumFractionDigits: 2,
+  }).format(claimValue);
+  return `Caso ${actionType.toLowerCase()} no ${tribunal} com valor estimado em ${formattedValue}. A leitura simulada indica pontos de prova consistentes, risco controlado e janela viável para acordo com estratégia ativa de negociação.`;
+}
+
+export function buildMockUploadHistory(filters: DashboardFilters): UploadHistoryItem[] {
+  const now = new Date();
+  const filterKey = `${filters.tribunal}|${filters.juiz}|${filters.tipo_acao}|${filters.faixa_valor}|${filters.periodo}`;
+  const seed = hashString(filterKey);
+
+  const selectedTribunal = filters.tribunal === "Todos os Tribunais" ? "TJSP" : filters.tribunal;
+  const selectedAction = filters.tipo_acao === "Todos os Tipos" ? "Trabalhista" : filters.tipo_acao;
+  const selectedJudge = filters.juiz === "Todos os Juízes" ? "Dra. Maria Santos" : filters.juiz;
+
+  const actionPool = [selectedAction, "Cível", "Tributário", "Comercial", "Família"];
+  const tribunalPool = [selectedTribunal, "TJRJ", "TRT2", "TRF3", "TJDFT"];
+  const judgePool = [selectedJudge, "Dr. João Silva", "Dr. Pedro Oliveira", "Dra. Ana Cardoso"];
+
+  const itemTemplates: Array<{
+    salt: string;
+    filename: string;
+    contentType: string;
+    aiStatus: UploadHistoryItem["ai_status"];
+    aiAttempts: number;
+    aiStage: string;
+    aiStageLabel: string;
+    aiProgress: number;
+    elapsedHours: number;
+    processedHours?: number;
+    riskScore?: number;
+    complexityScore?: number;
+    successProbability?: number;
+    settlementProbability?: number;
+    expectedDecisionMonths?: number;
+    aiSummary?: string;
+    needsRetryAtHours?: number;
+    aiLastError?: string;
+  }> = [
+    {
+      salt: "upload-1",
+      filename: "peticao_inicial_trabalhista.pdf",
+      contentType: "application/pdf",
+      aiStatus: "completed",
+      aiAttempts: 1,
+      aiStage: "completed",
+      aiStageLabel: "Processamento concluído com sucesso.",
+      aiProgress: 100,
+      elapsedHours: 3,
+      processedHours: 2.7,
+      riskScore: 41,
+      complexityScore: 46,
+      successProbability: 0.74,
+      settlementProbability: 0.58,
+      expectedDecisionMonths: 7.2,
+    },
+    {
+      salt: "upload-2",
+      filename: "contestacao_fornecedor.docx",
+      contentType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      aiStatus: "processing",
+      aiAttempts: 1,
+      aiStage: "analysis_ai",
+      aiStageLabel: "Analisando documento com IA.",
+      aiProgress: 62,
+      elapsedHours: 1.2,
+    },
+    {
+      salt: "upload-3",
+      filename: "anexos_probatorios.zip",
+      contentType: "application/zip",
+      aiStatus: "failed_retryable",
+      aiAttempts: 2,
+      aiStage: "failed",
+      aiStageLabel: "Falha temporária na análise. Nova tentativa agendada.",
+      aiProgress: 36,
+      elapsedHours: 5,
+      needsRetryAtHours: 0.5,
+      aiLastError: "Timeout no provedor externo de jurisprudência durante enriquecimento.",
+    },
+    {
+      salt: "upload-4",
+      filename: "sentenca_1_grau.pdf",
+      contentType: "application/pdf",
+      aiStatus: "manual_review",
+      aiAttempts: 1,
+      aiStage: "publication",
+      aiStageLabel: "Documento marcado para revisão manual.",
+      aiProgress: 83,
+      elapsedHours: 9,
+      aiLastError: "Inconsistência entre valor extraído e valor informado na petição.",
+    },
+    {
+      salt: "upload-5",
+      filename: "recurso_apelacao_cliente.pdf",
+      contentType: "application/pdf",
+      aiStatus: "completed",
+      aiAttempts: 1,
+      aiStage: "completed",
+      aiStageLabel: "Processamento concluído com sucesso.",
+      aiProgress: 100,
+      elapsedHours: 18,
+      processedHours: 17.4,
+      riskScore: 58,
+      complexityScore: 63,
+      successProbability: 0.61,
+      settlementProbability: 0.42,
+      expectedDecisionMonths: 11.5,
+    },
+  ];
+
+  return itemTemplates.map((template, index) => {
+    const localSeed = hashString(`${seed}:${template.salt}`);
+    const processNumber = `000${(1000 + (localSeed % 8999)).toString().padStart(4, "0")}-${(10 + (localSeed % 90)).toString().padStart(2, "0")}.202${(localSeed % 4) + 1}.8.${(10 + (localSeed % 89)).toString().padStart(2, "0")}.0100`;
+    const actionType = actionPool[index % actionPool.length];
+    const tribunal = tribunalPool[index % tribunalPool.length];
+    const judge = judgePool[index % judgePool.length];
+    const claimValue = Math.round(seededBetween(localSeed, "claim", 42000, 540000));
+    const createdAt = new Date(now.getTime() - template.elapsedHours * 60 * 60 * 1000);
+    const processedAt = template.processedHours ? new Date(now.getTime() - template.processedHours * 60 * 60 * 1000) : null;
+    const retryAt = template.needsRetryAtHours ? new Date(now.getTime() + template.needsRetryAtHours * 60 * 60 * 1000) : null;
+
+    const keyFacts = [
+      `Peça vinculada ao processo ${processNumber}.`,
+      `Ação classificada como ${actionType.toLowerCase()} no ${tribunal}.`,
+      "Partes com histórico prévio de tentativa de composição extrajudicial.",
+    ];
+
+    return {
+      case_id: `demo-case-${localSeed.toString(16).slice(0, 12)}`,
+      process_number: processNumber,
+      case_title: `${actionType} - ${tribunal}`,
+      filename: template.filename,
+      content_type: template.contentType,
+      tribunal,
+      judge,
+      action_type: actionType,
+      claim_value: claimValue,
+      status: "em_andamento",
+      ai_status: template.aiStatus,
+      ai_attempts: template.aiAttempts,
+      ai_stage: template.aiStage,
+      ai_stage_label: template.aiStageLabel,
+      ai_progress_percent: template.aiProgress,
+      ai_stage_updated_at: toIso(new Date(createdAt.getTime() + 20 * 60 * 1000)),
+      ai_next_retry_at: retryAt ? toIso(retryAt) : null,
+      ai_processed_at: processedAt ? toIso(processedAt) : null,
+      ai_last_error: template.aiLastError ?? null,
+      created_at: toIso(createdAt),
+      generated_data: {
+        extracted: {
+          process_number: processNumber,
+          title: `${actionType} - ${tribunal}`,
+          tribunal,
+          judge,
+          action_type: actionType,
+          claim_value: claimValue,
+          status: "Em andamento",
+          parties: {
+            author: "Parte autora",
+            defendant: "Parte ré",
+          },
+          key_facts: keyFacts,
+          deadlines: [
+            {
+              label: "Prazo para manifestação",
+              due_date: toIso(new Date(now.getTime() + (index + 2) * 24 * 60 * 60 * 1000)),
+              severity: index % 2 === 0 ? "alta" : "media",
+            },
+          ],
+        },
+        success_probability: template.successProbability ?? null,
+        settlement_probability: template.settlementProbability ?? null,
+        expected_decision_months: template.expectedDecisionMonths ?? null,
+        risk_score: template.riskScore ?? null,
+        complexity_score: template.complexityScore ?? null,
+        ai_summary:
+          template.aiSummary ??
+          (template.aiStatus === "completed"
+            ? buildAiSummary(actionType, tribunal, claimValue)
+            : null),
+      },
+    };
+  });
 }

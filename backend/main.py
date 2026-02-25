@@ -14,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from openai import OpenAI
 from pydantic import BaseModel, Field
-from sqlalchemy import func, or_, text
+from sqlalchemy import and_, func, or_, text
 from sqlalchemy.orm import Session
 
 from backend.db import SessionLocal, get_db, init_database
@@ -36,6 +36,8 @@ from backend.schemas.cases import (
     CaseExtractionPayload,
     CaseListItem,
     CaseScoresPayload,
+    UploadHistoryGeneratedData,
+    UploadHistoryItem,
     UploadCaseResponse,
 )
 from backend.schemas.dashboard import DashboardData
@@ -441,6 +443,62 @@ def _to_case_ai_status_response(case: ProcessCase) -> CaseAIStatusResponse:
     )
 
 
+def _safe_case_extraction_payload(raw_value: Any) -> CaseExtractionPayload:
+    if not isinstance(raw_value, dict):
+        return CaseExtractionPayload()
+    try:
+        return CaseExtractionPayload.model_validate(raw_value)
+    except Exception:
+        return CaseExtractionPayload()
+
+
+def _resolve_case_value_range_filter(claim_value: Optional[float]) -> str:
+    if claim_value is None:
+        return "Todos os Valores"
+    if claim_value <= 100000:
+        return "0-100k"
+    if claim_value <= 500000:
+        return "100k-500k"
+    return ">500k"
+
+
+def _build_case_dashboard_snapshot(db: Session, user_id: uuid_pkg.UUID, case: ProcessCase) -> DashboardData:
+    tribunal_filter = (case.tribunal or "").strip() or "Todos os Tribunais"
+    judge_filter = (case.judge or "").strip() or "Todos os Juízes"
+    action_filter = (case.action_type or "").strip() or "Todos os Tipos"
+    value_range_filter = _resolve_case_value_range_filter(case.claim_value)
+
+    return build_dashboard_data(
+        db=db,
+        user_id=user_id,
+        tribunal=tribunal_filter,
+        juiz=judge_filter,
+        tipo_acao=action_filter,
+        faixa_valor=value_range_filter,
+        periodo="all",
+        ai_client=None,
+    )
+
+
+def _safe_dashboard_snapshot_payload(raw_value: Any) -> Optional[DashboardData]:
+    if not isinstance(raw_value, dict):
+        return None
+    try:
+        return DashboardData.model_validate(raw_value)
+    except Exception:
+        return None
+
+
+def _persist_case_dashboard_snapshot(db: Session, case: ProcessCase) -> None:
+    if case.user_id is None:
+        return
+    if isinstance(case.dashboard_snapshot, dict):
+        return
+    snapshot = _build_case_dashboard_snapshot(db=db, user_id=case.user_id, case=case)
+    case.dashboard_snapshot = snapshot.model_dump(mode="json")
+    db.commit()
+
+
 def _set_case_ai_failure(db: Session, case: ProcessCase, error: str, retryable: bool) -> None:
     attempt = int(case.ai_attempts or 0)
     message = (error or "Falha desconhecida na análise de IA.").strip()[:800]
@@ -461,6 +519,12 @@ def _set_case_ai_failure(db: Session, case: ProcessCase, error: str, retryable: 
         percent=max(int(case.ai_progress_percent or 0), 45),
     )
     db.commit()
+    if case.ai_status in {AI_STATUS_FAILED, AI_STATUS_MANUAL_REVIEW}:
+        try:
+            _persist_case_dashboard_snapshot(db=db, case=case)
+        except Exception:
+            db.rollback()
+            logger.exception("Falha ao persistir snapshot do dashboard para case_id=%s", case.id)
 
 
 def _process_case_ai_enrichment(case_id: uuid_pkg.UUID) -> None:
@@ -610,6 +674,11 @@ def _process_case_ai_enrichment(case_id: uuid_pkg.UUID) -> None:
             percent=100,
         )
         db.commit()
+        try:
+            _persist_case_dashboard_snapshot(db=db, case=case)
+        except Exception:
+            db.rollback()
+            logger.exception("Falha ao persistir snapshot do dashboard para case_id=%s", case.id)
 
 
 def _trigger_case_ai_processing_async(case_id: uuid_pkg.UUID) -> None:
@@ -1054,6 +1123,115 @@ def list_cases(
         )
         for item in rows
     ]
+
+
+@app.get("/api/cases/{case_id}/dashboard-context", response_model=DashboardData)
+def get_case_dashboard_context(
+    case_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> DashboardData:
+    try:
+        parsed_case_id = uuid_pkg.UUID(case_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="ID de caso inválido.") from exc
+
+    case = (
+        db.query(ProcessCase)
+        .filter(
+            ProcessCase.id == parsed_case_id,
+            ProcessCase.user_id == current_user.id,
+        )
+        .first()
+    )
+    if case is None:
+        raise HTTPException(status_code=404, detail="Caso não encontrado.")
+
+    stored_snapshot = _safe_dashboard_snapshot_payload(case.dashboard_snapshot)
+    if stored_snapshot is not None:
+        return stored_snapshot
+
+    if case.ai_status in {AI_STATUS_QUEUED, AI_STATUS_PROCESSING, AI_STATUS_FAILED_RETRYABLE}:
+        raise HTTPException(
+            status_code=409,
+            detail="Snapshot deste upload ainda está sendo consolidado. Aguarde o término da análise.",
+        )
+
+    # Fallback for legacy records created before snapshot support.
+    snapshot = _build_case_dashboard_snapshot(db=db, user_id=current_user.id, case=case)
+    case.dashboard_snapshot = snapshot.model_dump(mode="json")
+    db.commit()
+    return snapshot
+
+
+@app.get("/api/cases/upload-history", response_model=List[UploadHistoryItem])
+def list_upload_history(
+    limit: int = Query(default=60, ge=1, le=500),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> List[UploadHistoryItem]:
+    latest_document_subquery = (
+        db.query(
+            ProcessDocument.case_id.label("case_id"),
+            func.max(ProcessDocument.created_at).label("latest_document_created_at"),
+        )
+        .group_by(ProcessDocument.case_id)
+        .subquery()
+    )
+
+    rows = (
+        db.query(ProcessCase, ProcessDocument)
+        .outerjoin(latest_document_subquery, latest_document_subquery.c.case_id == ProcessCase.id)
+        .outerjoin(
+            ProcessDocument,
+            and_(
+                ProcessDocument.case_id == ProcessCase.id,
+                ProcessDocument.created_at == latest_document_subquery.c.latest_document_created_at,
+            ),
+        )
+        .filter(ProcessCase.user_id == current_user.id)
+        .order_by(ProcessCase.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+
+    items: List[UploadHistoryItem] = []
+    for case_item, document_item in rows:
+        extracted_payload = _safe_case_extraction_payload(case_item.extracted_fields)
+        items.append(
+            UploadHistoryItem(
+                case_id=str(case_item.id),
+                process_number=case_item.process_number,
+                case_title=case_item.title,
+                filename=document_item.filename if document_item else None,
+                content_type=document_item.content_type if document_item else None,
+                tribunal=case_item.tribunal,
+                judge=case_item.judge,
+                action_type=case_item.action_type,
+                claim_value=case_item.claim_value,
+                status=case_item.status,
+                ai_status=case_item.ai_status or AI_STATUS_QUEUED,
+                ai_attempts=int(case_item.ai_attempts or 0),
+                ai_stage=case_item.ai_stage or AI_STAGE_EXTRACTION,
+                ai_stage_label=case_item.ai_stage_label,
+                ai_progress_percent=int(case_item.ai_progress_percent or 0),
+                ai_stage_updated_at=case_item.ai_stage_updated_at,
+                ai_next_retry_at=case_item.ai_next_retry_at,
+                ai_processed_at=case_item.ai_processed_at,
+                ai_last_error=case_item.ai_last_error,
+                created_at=case_item.created_at,
+                generated_data=UploadHistoryGeneratedData(
+                    extracted=extracted_payload,
+                    success_probability=case_item.success_probability,
+                    settlement_probability=case_item.settlement_probability,
+                    expected_decision_months=case_item.expected_decision_months,
+                    risk_score=case_item.risk_score,
+                    complexity_score=case_item.complexity_score,
+                    ai_summary=case_item.ai_summary,
+                ),
+            ),
+        )
+    return items
 
 
 @app.post("/api/cases/extract", response_model=CaseExtractionPreviewResponse)

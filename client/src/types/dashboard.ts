@@ -179,3 +179,52 @@ export type CaseAIStatusResponse = {
   ai_processed_at?: string | null;
   ai_last_error?: string | null;
 };
+
+export type UploadHistoryGeneratedData = {
+  extracted: {
+    process_number?: string | null;
+    title?: string | null;
+    tribunal?: string | null;
+    judge?: string | null;
+    action_type?: string | null;
+    claim_value?: number | null;
+    status?: string | null;
+    parties?: Record<string, unknown>;
+    key_facts?: string[];
+    deadlines?: Array<{
+      label: string;
+      due_date?: string | null;
+      severity?: string | null;
+    }>;
+  };
+  success_probability?: number | null;
+  settlement_probability?: number | null;
+  expected_decision_months?: number | null;
+  risk_score?: number | null;
+  complexity_score?: number | null;
+  ai_summary?: string | null;
+};
+
+export type UploadHistoryItem = {
+  case_id: string;
+  process_number: string;
+  case_title?: string | null;
+  filename?: string | null;
+  content_type?: string | null;
+  tribunal?: string | null;
+  judge?: string | null;
+  action_type?: string | null;
+  claim_value?: number | null;
+  status?: string | null;
+  ai_status: CaseAIStatus;
+  ai_attempts: number;
+  ai_stage?: UploadCaseResponse["ai_stage"];
+  ai_stage_label?: string | null;
+  ai_progress_percent?: number | null;
+  ai_stage_updated_at?: string | null;
+  ai_next_retry_at?: string | null;
+  ai_processed_at?: string | null;
+  ai_last_error?: string | null;
+  created_at: string;
+  generated_data: UploadHistoryGeneratedData;
+};

@@ -9,7 +9,7 @@ export default function PrivacyPage() {
   return (
     <main className="min-h-screen bg-slate-950 text-slate-100">
       <section className="mx-auto max-w-4xl px-6 py-16">
-        <div className="mb-8 flex items-center justify-between gap-3">
+        <div className="mb-8 flex flex-wrap items-center justify-between gap-3">
           <Link href="/" className="inline-flex items-center gap-3">
             <Scale className="h-7 w-7 text-cyan-300" />
             <span className="text-xl font-extrabold">LexScale</span>

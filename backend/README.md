@@ -48,6 +48,8 @@ npm run dev:backend
 - `PUT /api/profile`
 - `GET /api/dashboard`
 - `GET /api/cases`
+- `GET /api/cases/{case_id}/dashboard-context`
+- `GET /api/cases/upload-history`
 - `POST /api/cases/extract`
 - `POST /api/cases/upload`
 - `GET /api/public-data/sources`
@@ -63,6 +65,11 @@ npm run dev:backend
 - `POST /api/strategic-alerts/scan`
 - `POST /api/strategic-alerts/{alert_id}/read`
 - `POST /api/strategic-alerts/{alert_id}/dismiss`
+
+Observação sobre histórico consolidado por upload:
+- O endpoint `GET /api/cases/{case_id}/dashboard-context` retorna um snapshot congelado do dashboard por documento.
+- Esse snapshot é salvo automaticamente quando o processamento assíncrono do upload termina (concluído ou falha final).
+- Alterações de filtros posteriores não sobrescrevem o snapshot salvo.
 
 Observação: todos os endpoints `/api/*` (exceto login/registro) exigem sessão autenticada via cookie HTTP-only.
 
