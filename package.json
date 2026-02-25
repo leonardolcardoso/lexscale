@@ -6,6 +6,7 @@
   "scripts": {
     "dev:client": "vite dev --port 5000",
     "dev:backend": ".venv/bin/python -m uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000",
+    "dev:up": "bash script/dev-up.sh",
     "dev": "NODE_ENV=development tsx server/index.ts",
     "build:client": "vite build",
     "build": "tsx script/build.ts",

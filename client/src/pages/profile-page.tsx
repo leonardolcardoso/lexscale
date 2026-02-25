@@ -1,18 +1,20 @@
 import { useEffect, useState } from "react";
 import { Link, useLocation } from "wouter";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { Scale } from "lucide-react";
+import { ArrowLeft, Scale } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
+import { useBackNavigation } from "@/hooks/use-back-navigation";
 import { fetchProfile, isUnauthorizedError, logout, updateProfile } from "@/lib/auth";
 
 export default function ProfilePage() {
   const [, setLocation] = useLocation();
   const { toast } = useToast();
+  const goBack = useBackNavigation("/dashboard");
   const [form, setForm] = useState({
     first_name: "",
     last_name: "",
@@ -52,7 +54,7 @@ export default function ProfilePage() {
   const logoutMutation = useMutation({
     mutationFn: logout,
     onSuccess: () => {
-      setLocation("/auth?tab=login");
+      setLocation("/auth?tab=login", { replace: true });
     },
     onError: (error) => {
       toast({
@@ -81,7 +83,7 @@ export default function ProfilePage() {
       return;
     }
     if (isUnauthorizedError(profileQuery.error)) {
-      setLocation("/auth?tab=login");
+      setLocation("/auth?tab=login", { replace: true });
       return;
     }
     toast({
@@ -101,16 +103,17 @@ export default function ProfilePage() {
   const user = profileQuery.data;
 
   return (
-    <div className="min-h-screen bg-[radial-gradient(circle_at_15%_10%,rgba(59,130,246,0.28),transparent_40%),radial-gradient(circle_at_85%_0%,rgba(20,184,166,0.2),transparent_35%),linear-gradient(180deg,#050b1d_0%,#040916_100%)] p-6 md:p-10">
+    <div className="profile-shell min-h-screen bg-[radial-gradient(circle_at_15%_10%,rgba(59,130,246,0.28),transparent_40%),radial-gradient(circle_at_85%_0%,rgba(20,184,166,0.2),transparent_35%),linear-gradient(180deg,#050b1d_0%,#040916_100%)] p-6 md:p-10">
       <div className="mx-auto w-full max-w-4xl">
         <header className="mb-6 flex items-center justify-between">
-          <Link href="/dashboard" className="inline-flex items-center gap-2 text-white">
+          <Link href="/" className="inline-flex items-center gap-2 text-slate-900 dark:text-white">
             <Scale className="h-5 w-5 text-cyan-300" />
             <span className="font-bold">LexScale</span>
           </Link>
           <div className="flex gap-2">
-            <Button variant="outline" className="border-slate-700 bg-slate-900/50 text-slate-100 hover:bg-slate-800" onClick={() => setLocation("/dashboard")}>
-              Voltar ao Dashboard
+            <Button variant="outline" className="border-slate-700 bg-slate-900/50 text-slate-100 hover:bg-slate-800" onClick={goBack}>
+              <ArrowLeft className="mr-1 h-4 w-4" />
+              Voltar
             </Button>
             <Button variant="outline" className="border-slate-700 bg-slate-900/50 text-slate-100 hover:bg-slate-800" onClick={() => logoutMutation.mutate()} disabled={logoutMutation.isPending}>
               {logoutMutation.isPending ? "Saindo..." : "Sair"}

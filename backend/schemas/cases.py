@@ -36,7 +36,11 @@ class UploadCaseResponse(BaseModel):
     case_id: str
     process_number: str
     extracted: CaseExtractionPayload
-    scores: CaseScoresPayload
+    scores: Optional[CaseScoresPayload] = None
+    ai_status: str
+    ai_attempts: int = 0
+    ai_next_retry_at: Optional[datetime] = None
+    ai_last_error: Optional[str] = None
     created_at: datetime
 
 
@@ -53,4 +57,18 @@ class CaseListItem(BaseModel):
     expected_decision_months: Optional[float] = None
     risk_score: Optional[float] = None
     complexity_score: Optional[float] = None
+    ai_status: str = "queued"
+    ai_attempts: int = 0
+    ai_next_retry_at: Optional[datetime] = None
+    ai_processed_at: Optional[datetime] = None
+    ai_last_error: Optional[str] = None
     created_at: datetime
+
+
+class CaseAIStatusResponse(BaseModel):
+    case_id: str
+    ai_status: str
+    ai_attempts: int = 0
+    ai_next_retry_at: Optional[datetime] = None
+    ai_processed_at: Optional[datetime] = None
+    ai_last_error: Optional[str] = None

@@ -12,8 +12,8 @@ const TRIBUNAL_FACTORS: Record<string, number> = {
 };
 
 const JUDGE_FACTORS: Record<string, number> = {
-  "Todos os Juizes": 1,
-  "Dr. Joao Silva": 1.05,
+  "Todos os Juízes": 1,
+  "Dr. João Silva": 1.05,
   "Dra. Maria Santos": 0.98,
   "Dr. Pedro Oliveira": 0.94,
 };
@@ -21,10 +21,10 @@ const JUDGE_FACTORS: Record<string, number> = {
 const ACTION_FACTORS: Record<string, number> = {
   "Todos os Tipos": 1,
   Trabalhista: 1.08,
-  Civel: 1.01,
-  Tributario: 0.9,
+  Cível: 1.01,
+  Tributário: 0.9,
   Comercial: 1.13,
-  Familia: 0.96,
+  Família: 0.96,
 };
 
 const CLAIM_FACTORS: Record<string, number> = {
@@ -35,9 +35,9 @@ const CLAIM_FACTORS: Record<string, number> = {
 };
 
 const PERIOD_FACTORS: Record<string, number> = {
-  "Ultimos 3 meses": 0.62,
-  "Ultimos 6 meses": 1,
-  "Ultimos 12 meses": 1.64,
+  "Últimos 3 meses": 0.62,
+  "Últimos 6 meses": 1,
+  "Últimos 12 meses": 1.64,
 };
 
 function clamp(value: number, min: number, max: number): number {
@@ -76,6 +76,10 @@ function formatPercent(value: number): string {
   return `${Math.round(value)}%`;
 }
 
+function formatCurrency(value: number): string {
+  return `R$ ${Math.round(value).toLocaleString("pt-BR")}`;
+}
+
 function buildCaseId(seed: number, salt: string): string {
   const local = hashString(`${seed}:${salt}`);
   const year = 2022 + (local % 4);
@@ -105,7 +109,7 @@ export function buildMockDashboardData(filters: DashboardFilters): DashboardData
   const strategyFactor = judgeFactor * actionFactor;
 
   const selectedTribunal = filters.tribunal === "Todos os Tribunais" ? "TJSP" : filters.tribunal;
-  const selectedJudge = filters.juiz === "Todos os Juizes" ? "Dr. Joao Silva" : filters.juiz;
+  const selectedJudge = filters.juiz === "Todos os Juízes" ? "Dr. João Silva" : filters.juiz;
   const selectedAction = filters.tipo_acao === "Todos os Tipos" ? "Trabalhista" : filters.tipo_acao;
 
   const processedDocuments = Math.max(
@@ -214,32 +218,78 @@ export function buildMockDashboardData(filters: DashboardFilters): DashboardData
     { title: "Agressiva", success: aggressiveSuccess },
   ];
   const bestScenario = scenarioBySuccess.reduce((best, item) => (item.success > best.success ? item : best), scenarioBySuccess[0]);
+  const conservativeRisk = clamp(Math.round(riskScore * seededBetween(seed, "risk-cons", 0.36, 0.5)), 10, 70);
+  const balancedRisk = clamp(Math.round(riskScore * seededBetween(seed, "risk-bal", 0.75, 0.95)), 16, 88);
+  const aggressiveRisk = clamp(Math.round(riskScore * seededBetween(seed, "risk-agg", 0.58, 0.82)), 12, 82);
+  const scenarioAValue = conservativeCost * 1000;
+  const scenarioBValue = balancedCost * 1000;
+  const scenarioCValue = aggressiveCost * 1000;
+  const scenarioASample = Math.max(48, Math.round(128 * periodFactor * seededBetween(seed, "sample-a", 0.86, 1.26)));
+  const scenarioBSample = Math.max(72, Math.round(224 * periodFactor * seededBetween(seed, "sample-b", 0.9, 1.22)));
+  const scenarioCSample = Math.max(36, Math.round(96 * periodFactor * seededBetween(seed, "sample-c", 0.84, 1.2)));
+
+  const scenarioStats = [
+    { shortTitle: "Cenário A", fullTitle: "Cenário A: Acordo Imediato", value: scenarioAValue, risk: conservativeRisk, time: conservativeTime },
+    { shortTitle: "Cenário B", fullTitle: "Cenário B: Julgamento Final", value: scenarioBValue, risk: balancedRisk, time: balancedTime },
+    { shortTitle: "Cenário C", fullTitle: "Cenário C: Estratégia Alternativa", value: scenarioCValue, risk: aggressiveRisk, time: aggressiveTime },
+  ];
+  const bestValueScenario = scenarioStats.reduce((best, item) => (item.value > best.value ? item : best), scenarioStats[0]);
+  const lowestRiskScenario = scenarioStats.reduce((best, item) => (item.risk < best.risk ? item : best), scenarioStats[0]);
+  const fastestScenario = scenarioStats.reduce((best, item) => (item.time < best.time ? item : best), scenarioStats[0]);
+  const bestValueVsA = scenarioAValue > 0 ? Math.round(((bestValueScenario.value - scenarioAValue) / scenarioAValue) * 100) : 0;
+  const lowestRiskVsB = Math.round(balancedRisk - lowestRiskScenario.risk);
+  const fastestVsB = round(balancedTime - fastestScenario.time, 1);
+  const bestScenarioCopy = `${bestScenario.title.toLowerCase()} (${formatPercent(bestScenario.success)})`;
 
   const opportunitiesCount = Math.max(1, Math.round((agreementScore - 45) / 12));
   const alertDetails: DashboardData["alertas"]["details"] = [
     {
       type: "critical",
-      title: `Prazo de contestacao no ${selectedTribunal}`,
-      time: "ha 12 min",
-      desc: `Revisar peca do caso ${buildCaseId(seed, "critical")} com ${selectedJudge}. Vencimento estimado em ${daysUntilCritical} dia(s).`,
+      title: `Prazo de contestação no ${selectedTribunal}`,
+      time: "há 12 min",
+      desc: `Revisar peça do caso ${buildCaseId(seed, "critical")} com ${selectedJudge}. Vencimento estimado em ${daysUntilCritical} dia(s).`,
     },
     {
       type: "warning",
-      title: `Volume acima da media em ${selectedAction}`,
-      time: "ha 31 min",
-      desc: `Filtro atual mostra maior concentracao de demandas em ${selectedTribunal}. Priorize triagem para reduzir risco operacional.`,
+      title: `Volume acima da média em ${selectedAction}`,
+      time: "há 31 min",
+      desc: `Filtro atual mostra maior concentração de demandas em ${selectedTribunal}. Priorize triagem para reduzir risco operacional.`,
+    },
+    {
+      type: "warning",
+      title: "Sinal de variação no tempo médio",
+      time: "há 43 min",
+      desc: `A estimativa de tramitação subiu ${Math.max(0.3, Math.abs(timeDiff)).toFixed(1)} mes(es) no recorte recente. Reavalie prioridades de acompanhamento.`,
     },
     {
       type: "opportunity",
       title: `Oportunidade de acordo em ${opportunitiesCount} processo(s)`,
-      time: "ha 58 min",
-      desc: `Com os filtros aplicados, a chance media de acordo ficou em ${agreementScore}%. Simule contraproposta na aba de simulacoes.`,
+      time: "há 58 min",
+      desc: `Com os filtros aplicados, a chance média de acordo ficou em ${agreementScore}%. Simule contraproposta na aba de simulações.`,
+    },
+    {
+      type: "opportunity",
+      title: "Janela de acordo antes da próxima audiência",
+      time: "há 1h 11 min",
+      desc: `Casos com perfil similar indicam taxa de fechamento acima de ${Math.max(55, agreementScore - 8)}% quando a proposta é enviada em até ${daysUntilWarning} dia(s).`,
     },
     {
       type: "info",
-      title: "Dados de demonstracao recalculados",
-      time: "ha 2h",
-      desc: "Os graficos foram atualizados com base nos filtros selecionados, mantendo a experiencia em modo mock.",
+      title: "Dados de demonstração recalculados",
+      time: "há 2h",
+      desc: "Os gráficos foram atualizados com base nos filtros selecionados, mantendo a experiência em modo mock.",
+    },
+    {
+      type: "info",
+      title: "Benchmark atualizado para o recorte atual",
+      time: "há 3h",
+      desc: `Comparativo de mercado sincronizado para ${selectedAction} em ${selectedTribunal}, com horizonte de ${daysUntilInfo} dia(s).`,
+    },
+    {
+      type: "critical",
+      title: "Pendência de documento probatório",
+      time: "há 4h",
+      desc: `Processo ${buildCaseId(seed, "critical-doc")} segue sem anexo complementar. Risco de impacto no prazo em ${daysUntilCritical} dia(s).`,
     },
   ];
 
@@ -266,8 +316,8 @@ export function buildMockDashboardData(filters: DashboardFilters): DashboardData
   }));
 
   const similarTypeA = selectedAction;
-  const similarTypeB = selectedAction === "Trabalhista" ? "Civel" : "Trabalhista";
-  const similarTypeC = selectedAction === "Tributario" ? "Comercial" : "Tributario";
+  const similarTypeB = selectedAction === "Trabalhista" ? "Cível" : "Trabalhista";
+  const similarTypeC = selectedAction === "Tributário" ? "Comercial" : "Tributário";
 
   return {
     updated_label: `Atualizado agora (demo • ${filters.periodo})`,
@@ -279,52 +329,52 @@ export function buildMockDashboardData(filters: DashboardFilters): DashboardData
           title: "Documentos processados",
           value: processedDocuments.toLocaleString("pt-BR"),
           subtitle: `${filters.periodo} • ${selectedTribunal}`,
-          footer: "Base de demonstracao filtrada",
+          footer: "Base de demonstração filtrada",
           color: "blue",
-          updated: "Atualizado ha 2 min",
+          updated: "Atualizado há 2 min",
         },
         {
           title: "Tempo economizado",
           value: formatHours(savedHours),
-          subtitle: `media por analise (${selectedAction})`,
-          footer: "Estimativa automatica",
+          subtitle: `média por análise (${selectedAction})`,
+          footer: "Estimativa automática",
           color: "blue",
         },
         {
-          title: "Taxa de precisao",
+          title: "Taxa de precisão",
           value: `${precision.toFixed(1)}%`,
-          subtitle: "media das extracoes no recorte",
+          subtitle: "média das extrações no recorte",
           footer: "Modelo IA v2.1",
           color: "orange",
-          warning: "Somente dados ficticios",
+          warning: "Somente dados fictícios",
         },
       ],
       scores: [
         { title: "Risco", value: riskScore, color: "orange" },
         { title: "Complexidade", value: complexityScore, color: "blue" },
         { title: "Acordo", value: agreementScore, color: "emerald" },
-        { title: "Confianca", value: confidenceScore, color: "emerald" },
+        { title: "Confiança", value: confidenceScore, color: "emerald" },
       ],
       radar,
       insights: [
         {
-          title: "Padrao do juizo",
-          text: `No recorte de ${selectedTribunal}, peticoes objetivas para ${selectedJudge} tendem a reduzir retrabalho.`,
+          title: "Padrão do juízo",
+          text: `No recorte de ${selectedTribunal}, petições objetivas para ${selectedJudge} tendem a reduzir retrabalho.`,
         },
         {
           title: "Janela de acordo",
-          text: `Com chance media de acordo em ${agreementScore}%, a melhor janela segue antes da segunda audiencia.`,
+          text: `Com chance média de acordo em ${agreementScore}%, a melhor janela segue antes da segunda audiência.`,
         },
         {
-          title: "Ponto de atencao",
-          text: `Risco atual em ${riskScore}% indica atencao aos prazos dos proximos ${daysUntilWarning} dias para evitar multas.`,
+          title: "Ponto de atenção",
+          text: `Risco atual em ${riskScore}% indica atenção aos prazos dos próximos ${daysUntilWarning} dias para evitar multas.`,
         },
       ],
       weekly_activity: weeklyActivity,
       critical_deadlines: [
-        { label: `Contestacao ${buildCaseId(seed, "deadline-a")}`, date: `${daysUntilCritical} dias`, color: "red" },
-        { label: `Audiencia ${buildCaseId(seed, "deadline-b")}`, date: `${daysUntilWarning} dias`, color: "orange" },
-        { label: `Pericia ${buildCaseId(seed, "deadline-c")}`, date: `${daysUntilInfo} dias`, color: "blue" },
+        { label: `Contestação ${buildCaseId(seed, "deadline-a")}`, date: `${daysUntilCritical} dias`, color: "red" },
+        { label: `Audiência ${buildCaseId(seed, "deadline-b")}`, date: `${daysUntilWarning} dias`, color: "orange" },
+        { label: `Perícia ${buildCaseId(seed, "deadline-c")}`, date: `${daysUntilInfo} dias`, color: "blue" },
       ],
     },
     inteligencia: {
@@ -365,7 +415,7 @@ export function buildMockDashboardData(filters: DashboardFilters): DashboardData
           trend_color: successDiff >= 0 ? "emerald" : "orange",
         },
         {
-          label: "Tempo medio",
+          label: "Tempo médio",
           user: userTime.toFixed(1),
           market: marketTime.toFixed(1),
           trend: `${timeDiffText}`,
@@ -383,73 +433,92 @@ export function buildMockDashboardData(filters: DashboardFilters): DashboardData
     },
     simulacoes: {
       description:
-        `Com os filtros aplicados (${selectedTribunal} • ${selectedAction}), o modelo estima impacto de estrategia em prazo, custo e probabilidade de exito.`,
+        `Cenários simulados em modo demo para o recorte atual (${selectedAction} em ${selectedTribunal}). No filtro aplicado, a estratégia ${bestScenarioCopy} foi a de maior sucesso projetado.`,
       scenarios: [
         {
-          title: "Estrategia Conservadora",
-          tag: "Risco baixo",
+          title: "Cenário A: Acordo Imediato",
+          tag: "RECOMENDADO",
           tag_color: "emerald",
           data: [
-            { label: "Prob. sucesso", val: formatPercent(conservativeSuccess), color: "emerald" },
-            { label: "Tempo medio", val: formatMonths(conservativeTime), color: "blue" },
-            { label: "Custo esperado", val: `R$ ${conservativeCost}k`, color: "orange" },
+            { label: "Probabilidade de Sucesso", val: formatPercent(conservativeSuccess), color: "emerald" },
+            { label: "Valor Estimado", val: formatCurrency(scenarioAValue) },
+            { label: "Tempo Estimado", val: formatMonths(conservativeTime) },
+            { label: "Nível de Risco", val: formatPercent(conservativeRisk), color: "emerald" },
           ],
-          footer: "Prioriza previsibilidade e menor variacao de resultado.",
+          footer:
+            `Baseado em ${scenarioASample} casos simulados para ${selectedAction}. Acordo antes da audiência tende a reduzir prazo para ${formatMonths(conservativeTime)} no recorte atual.`,
+          detail_title: "Detalhes",
+          detail_summary: "Cenário A: Acordo Imediato (dados fictícios em modo demo).",
+          next_step_title: "Próximo passo recomendado:",
+          next_step_text:
+            "Em POC, o clique abre detalhes. Na versão real, este modal vira um fluxo com: baseline vs cenário, probabilidade, custo, prazos e ação (ex.: gerar proposta, checklist, minuta).",
         },
         {
-          title: "Estrategia Equilibrada",
-          tag: "Padrao",
+          title: "Cenário B: Julgamento Final",
+          tag: "EQUILIBRADO",
           tag_color: "blue",
           data: [
-            { label: "Prob. sucesso", val: formatPercent(balancedSuccess), color: "emerald" },
-            { label: "Tempo medio", val: formatMonths(balancedTime), color: "blue" },
-            { label: "Custo esperado", val: `R$ ${balancedCost}k`, color: "orange" },
+            { label: "Probabilidade de Sucesso", val: formatPercent(balancedSuccess), color: "emerald" },
+            { label: "Valor Estimado", val: formatCurrency(scenarioBValue) },
+            { label: "Tempo Estimado", val: formatMonths(balancedTime) },
+            { label: "Nível de Risco", val: formatPercent(balancedRisk), color: "orange" },
           ],
-          footer: "Combina velocidade com boa chance de acordo favoravel.",
+          footer:
+            `Baseado em ${scenarioBSample} casos simulados para ${selectedTribunal}. Manter até sentença melhora valor potencial, com tempo médio de ${formatMonths(balancedTime)}.`,
+          detail_title: "Detalhes",
+          detail_summary: "Cenário B: Julgamento Final (dados fictícios em modo demo).",
+          next_step_title: "Próximo passo recomendado:",
+          next_step_text: "Consolidar provas documentais e preparar linha de sustentação para reduzir risco recursal.",
         },
         {
-          title: "Estrategia Agressiva",
-          tag: "Maior retorno",
+          title: "Cenário C: Estratégia Alternativa",
+          tag: "ALTERNATIVA",
           tag_color: "orange",
           data: [
-            { label: "Prob. sucesso", val: formatPercent(aggressiveSuccess), color: "emerald" },
-            { label: "Tempo medio", val: formatMonths(aggressiveTime), color: "blue" },
-            { label: "Custo esperado", val: `R$ ${aggressiveCost}k`, color: "orange" },
+            { label: "Probabilidade de Sucesso", val: formatPercent(aggressiveSuccess), color: "orange" },
+            { label: "Valor Estimado", val: formatCurrency(scenarioCValue) },
+            { label: "Tempo Estimado", val: formatMonths(aggressiveTime) },
+            { label: "Nível de Risco", val: formatPercent(aggressiveRisk), color: "blue" },
           ],
-          footer: "Pode elevar custos no curto prazo em troca de ganho potencial.",
+          footer:
+            `Baseado em ${scenarioCSample} casos simulados. Estratégia alternativa reduz risco para ${formatPercent(aggressiveRisk)} com prazo estimado de ${formatMonths(aggressiveTime)}.`,
+          detail_title: "Detalhes",
+          detail_summary: "Cenário C: Estratégia Alternativa (dados fictícios em modo demo).",
+          next_step_title: "Próximo passo recomendado:",
+          next_step_text: "Validar perfil de mediação e estruturar proposta escalonada para acelerar composição.",
         },
       ],
       impact_metrics: [
         {
-          label: "Cenario",
+          label: "MELHOR VALOR",
           icon: "trophy",
-          title: "Melhor resultado",
-          val: bestScenario.title,
-          trend: `${bestScenario.success}% exito`,
+          title: bestValueScenario.shortTitle,
+          val: `${formatCurrency(bestValueScenario.value)} estimado`,
+          trend: `${bestValueVsA >= 0 ? "+" : ""}${bestValueVsA}% vs Cenário A`,
           trend_bg: "emerald",
         },
         {
-          label: "Risco",
+          label: "MENOR RISCO",
           icon: "shield",
-          title: "Exposicao",
-          val: riskScore <= 40 ? "Baixa" : riskScore <= 65 ? "Moderada" : "Alta",
-          trend: `${riskScore}%`,
-          trend_bg: riskScore <= 55 ? "blue" : "orange",
+          title: lowestRiskScenario.shortTitle,
+          val: `${formatPercent(lowestRiskScenario.risk)} de risco`,
+          trend: `${lowestRiskVsB >= 0 ? "-" : "+"}${Math.abs(lowestRiskVsB)}pp vs Cenário B`,
+          trend_bg: "emerald",
         },
         {
-          label: "Prazo",
+          label: "MAIS RÁPIDO",
           icon: "zap",
-          title: "Reducao media",
-          val: `${Math.abs(timeDiff).toFixed(1)} meses`,
-          trend: `${timeDiff <= 0 ? "-" : "+"}${Math.abs(timeDiff).toFixed(1)} vs mercado`,
-          trend_bg: timeDiff <= 0 ? "emerald" : "orange",
+          title: fastestScenario.shortTitle,
+          val: formatMonths(fastestScenario.time),
+          trend: `${fastestVsB >= 0 ? "-" : "+"}${Math.abs(fastestVsB).toFixed(1)} meses vs Cenário B`,
+          trend_bg: "emerald",
         },
       ],
     },
     alertas: {
       counts: [
         { count: alertCounters.critical, label: "CRITICOS", color: "red" },
-        { count: alertCounters.warning, label: "ATENCAO", color: "orange" },
+        { count: alertCounters.warning, label: "ATENÇÃO", color: "orange" },
         { count: alertCounters.info, label: "INFORMATIVOS", color: "blue" },
         { count: alertCounters.opportunity, label: "OPORTUNIDADES", color: "emerald" },
       ],

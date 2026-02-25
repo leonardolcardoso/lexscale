@@ -3,7 +3,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import JSON, Boolean, Column, DateTime, Float, ForeignKey, Integer, String, Text, func
+from sqlalchemy import JSON, Boolean, Column, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import declarative_base, relationship
 
@@ -21,6 +21,7 @@ class User(Base):
 
     profile = relationship("UserProfile", back_populates="user", uselist=False, cascade="all, delete-orphan")
     sessions = relationship("AuthSession", back_populates="user", cascade="all, delete-orphan")
+    strategic_alerts = relationship("StrategicAlert", back_populates="user", cascade="all, delete-orphan")
 
 
 class UserProfile(Base):
@@ -94,6 +95,11 @@ class ProcessCase(Base):
     risk_score = Column(Float, nullable=True)
     complexity_score = Column(Float, nullable=True)
     case_embedding = Column(Vector(EMBEDDING_DIMENSIONS), nullable=True)
+    ai_status = Column(Text, nullable=False, default="queued", index=True)
+    ai_attempts = Column(Integer, nullable=False, default=0)
+    ai_last_error = Column(Text, nullable=True)
+    ai_next_retry_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    ai_processed_at = Column(DateTime(timezone=True), nullable=True, index=True)
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), index=True)
     updated_at = Column(
         DateTime(timezone=True),
@@ -179,3 +185,35 @@ class PublicCaseRecord(Base):
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), index=True)
 
     source = relationship("PublicDataSource", back_populates="records")
+
+
+class StrategicAlert(Base):
+    __tablename__ = "strategic_alerts"
+    __table_args__ = (
+        UniqueConstraint("user_id", "fingerprint", name="uq_strategic_alert_user_fingerprint"),
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True)
+    category = Column(String(24), nullable=False, index=True)  # critical|warning|opportunity|info
+    title = Column(Text, nullable=False)
+    description = Column(Text, nullable=False)
+    fingerprint = Column(String(64), nullable=False, index=True)
+    status = Column(String(24), nullable=False, default="new", index=True)  # new|read|dismissed
+    source = Column(String(64), nullable=False, default="dashboard_scan")
+    occurrence_count = Column(Integer, nullable=False, default=1)
+    contexts = Column(JSON, nullable=True)
+    first_detected_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    last_detected_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), index=True)
+    notified_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    read_at = Column(DateTime(timezone=True), nullable=True)
+    dismissed_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), index=True)
+    updated_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+    user = relationship("User", back_populates="strategic_alerts")

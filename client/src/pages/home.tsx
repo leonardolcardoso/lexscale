@@ -21,7 +21,7 @@ import {
 import { motion } from "framer-motion";
 
 const WHATSAPP_URL =
-  "https://wa.me/5511999999999?text=Ol%C3%A1%2C%20quero%20uma%20demonstra%C3%A7%C3%A3o%20da%20LexScale.";
+  "https://wa.me/5534992322275?text=Ol%C3%A1%2C%20quero%20falar%20com%20vendas%20da%20LexScale.";
 const DEMO_EMAIL = "contato@lexscale.ai";
 
 const featureCards = [
@@ -82,6 +82,7 @@ const featureCards = [
 const steps = [
   {
     step: 1,
+    phase: "Entrada",
     title: "Upload de Documentos",
     desc: "Faça upload de contratos, petições, sentenças e outros documentos jurídicos em PDF, Word ou imagens",
     icon: <ArrowRight className="h-7 w-7 text-cyan-300" />,
@@ -89,6 +90,7 @@ const steps = [
   },
   {
     step: 2,
+    phase: "Processamento",
     title: "IA Processa",
     desc: "Nossa IA avançada extrai dados, identifica cláusulas, partes, valores e riscos automaticamente",
     icon: <Bot className="h-7 w-7 text-violet-300" />,
@@ -96,6 +98,7 @@ const steps = [
   },
   {
     step: 3,
+    phase: "Entrega",
     title: "Dados Estruturados",
     desc: "Receba dados organizados em dashboards, APIs ou integre diretamente ao seu sistema",
     icon: <Database className="h-7 w-7 text-emerald-300" />,
@@ -184,7 +187,7 @@ export default function Home() {
   }, [location]);
 
   return (
-    <div className="relative min-h-screen bg-slate-950">
+    <div className="home-page relative min-h-screen bg-slate-950">
       <Navbar />
 
       <section className="bg-hero-gradient relative overflow-hidden pb-24 pt-14 text-white md:pt-16 lg:pt-20">
@@ -347,7 +350,6 @@ export default function Home() {
           </div>
 
           <div className="relative grid gap-6 md:grid-cols-3">
-            <div className="pointer-events-none absolute left-[15%] right-[15%] top-24 hidden h-px bg-gradient-to-r from-blue-500/40 via-cyan-500/40 to-emerald-500/40 md:block" />
             {steps.map((step, index) => (
               <motion.div
                 key={step.title}
@@ -358,9 +360,15 @@ export default function Home() {
                 transition={{ duration: 0.4, delay: index * 0.08 }}
                 className="soft-panel relative overflow-hidden p-7"
               >
-                <span className="absolute -left-2 -top-2 flex h-10 w-10 items-center justify-center rounded-full bg-slate-900 text-sm font-black text-white">
-                  {step.step}
-                </span>
+                <div className="mb-5 flex items-center justify-between gap-3">
+                  <span className="inline-flex items-center gap-2 rounded-full border border-blue-300/25 bg-slate-900/80 px-3 py-1 text-xs font-bold text-blue-100">
+                    <span className="flex h-6 w-6 items-center justify-center rounded-full bg-cyan-500/20 text-[11px] font-black text-cyan-200">
+                      {step.step}
+                    </span>
+                    Passo {step.step} de {steps.length}
+                  </span>
+                  <span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400">{step.phase}</span>
+                </div>
                 <div className={`mb-5 inline-flex h-14 w-14 items-center justify-center rounded-2xl ${step.panel}`}>{step.icon}</div>
                 <h3 className="mb-3 text-xl font-bold text-slate-100">{step.title}</h3>
                 <p className="text-sm leading-relaxed text-slate-300">{step.desc}</p>
@@ -539,7 +547,7 @@ export default function Home() {
             <h4 className="mb-4 font-bold text-white">Contato</h4>
             <ul className="space-y-2 text-sm">
               <li>contato@lexscale.ai</li>
-              <li>(11) 9999-9999</li>
+              <li>(34) 99232-2275</li>
             </ul>
           </div>
         </div>

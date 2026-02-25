@@ -1,8 +1,8 @@
-# Inventario Completo de Dados do Dashboard
+# Inventário Completo de Dados do Dashboard
 
-Este documento lista todos os dados consumidos pela tela de dashboard atual e o plano de geracao para dados reais.
+Este documento lista todos os dados consumidos pela tela de dashboard atual e o plano de geração para dados reais.
 
-Arquivo de referencia do frontend:
+Arquivo de referência do frontend:
 - `/Users/pedrobrugger/Projects/lexScale/repos/lexscale/client/src/pages/dashboard.tsx`
 
 ## 1) Filtros Globais
@@ -12,7 +12,7 @@ Arquivo de referencia do frontend:
 - `faixa_valor`
 - `periodo`
 
-## 2) Visao Geral
+## 2) Visão Geral
 
 ### 2.1 Cards principais (3)
 Para cada card:
@@ -25,9 +25,9 @@ Para cada card:
 - `warning` (opcional)
 
 Cards:
-1. Probabilidade de exito
+1. Probabilidade de êxito
 2. Probabilidade de acordo
-3. Tempo estimado de decisao
+3. Tempo estimado de decisão
 
 ### 2.2 Scores do processo (4)
 Cada score:
@@ -37,7 +37,7 @@ Cada score:
 
 Scores:
 1. Risco
-2. Chance de exito
+2. Chance de êxito
 3. Chance de acordo
 4. Complexidade
 
@@ -45,11 +45,11 @@ Scores:
 Cada ponto:
 - `subject`
 - `current` (processo atual)
-- `cluster_avg` (media do cluster)
+- `cluster_avg` (média do cluster)
 
 Subjects:
 - Complexidade
-- Chance exito
+- Chance êxito
 - Valor
 - Tempo
 - Risco
@@ -59,18 +59,18 @@ Cada insight:
 - `title`
 - `text`
 
-### 2.5 Atividade semanal (grafico de barras)
+### 2.5 Atividade semanal (gráfico de barras)
 Cada ponto:
 - `name` (dia)
 - `value`
 
-### 2.6 Prazos criticos
+### 2.6 Prazos críticos
 Cada prazo:
 - `label`
 - `date`
 - `color`
 
-## 3) Inteligencia Estrategica
+## 3) Inteligência Estratégica
 
 ### 3.1 Processos similares
 Cada item:
@@ -98,20 +98,20 @@ Cada item:
 - `trend_color`
 - `unit` (opcional)
 
-## 4) Simulacoes Avancadas
+## 4) Simulações Avançadas
 
 ### 4.1 Bloco explicativo
 - `description`
 
-### 4.2 Cenarios (A/B/C)
-Cada cenario:
+### 4.2 Cenários (A/B/C)
+Cada cenário:
 - `title`
 - `tag`
 - `tag_color`
-- `data` (lista de metricas)
+- `data` (lista de métricas)
 - `footer`
 
-Cada metrica do cenario:
+Cada métrica do cenário:
 - `label`
 - `val`
 - `color` (opcional)
@@ -125,7 +125,7 @@ Cada item:
 - `trend`
 - `trend_bg`
 
-## 5) Alertas Estrategicos
+## 5) Alertas Estratégicos
 
 ### 5.1 Contadores
 Cada contador:
@@ -152,16 +152,16 @@ Gerador atual:
 - `/Users/pedrobrugger/Projects/lexScale/repos/lexscale/backend/services/dashboard.py`
 
 Status atual:
-- O endpoint ja consolida dados reais do Postgres (`process_cases`, `case_deadlines`, `public_case_records`).
-- Quando nao ha dados suficientes para algum bloco, o backend aplica fallback numerico seguro para manter o dashboard completo.
+- O endpoint já consolida dados reais do Postgres (`process_cases`, `case_deadlines`, `public_case_records`).
+- Quando não há dados suficientes para algum bloco, o backend aplica fallback numérico seguro para manter o dashboard completo.
 
-## 7) Pipeline Real de Geracao (proximo passo)
+## 7) Pipeline Real de Geração (próximo passo)
 
 ### 7.1 Fontes de dados
-1. Upload de processo do usuario (PDF/DOCX/IMG)
-2. Extracao estruturada por IA (partes, pedidos, valores, prazos, tema, classe)
-3. APIs publicas (tribunais, dados governamentais, jurisprudencia, movimentacoes)
-4. Base interna historica (processos, resultados, acordos, tempos, juiz/vara/tribunal)
+1. Upload de processo do usuário (PDF/DOCX/IMG)
+2. Extração estruturada por IA (partes, pedidos, valores, prazos, tema, classe)
+3. APIs públicas (tribunais, dados governamentais, jurisprudência, movimentações)
+4. Base interna histórica (processos, resultados, acordos, tempos, juiz/vara/tribunal)
 
 Endpoints operacionais:
 - `POST /api/cases/upload`
@@ -169,18 +169,18 @@ Endpoints operacionais:
 - `POST /api/public-data/sync`
 - `POST /api/public-data/records`
 
-APIs reais conectadas por padrao:
-- TJDFT Jurisprudencia (`https://jurisdf.tjdft.jus.br/api/v1/pesquisa`)
-- TRF5 Transparencia (`https://api-transparencia.trf5.jus.br/api/v1/documento/tipo`)
+APIs reais conectadas por padrão:
+- TJDFT Jurisprudência (`https://jurisdf.tjdft.jus.br/api/v1/pesquisa`)
+- TRF5 Transparência (`https://api-transparencia.trf5.jus.br/api/v1/documento/tipo`)
 
-### 7.2 Agregacoes necessarias
+### 7.2 Agregações necessárias
 1. Features do processo atual
 2. Cluster de casos similares
-3. Scores probabilisticos (exito, acordo, risco, complexidade)
-4. Serie temporal semanal
+3. Scores probabilísticos (êxito, acordo, risco, complexidade)
+4. Série temporal semanal
 5. Prazos e alertas por regras + anomalias
-6. Simulacoes de cenarios com baseline historico
-7. Benchmark escritorio vs mercado
+6. Simulações de cenários com baseline histórico
+7. Benchmark escritório vs mercado
 
-### 7.3 Saida final
+### 7.3 Saída final
 Todos os blocos acima devem ser preenchidos exclusivamente por dados de banco derivados dessas fontes.

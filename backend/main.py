@@ -1,6 +1,9 @@
 import os
 import re
-from datetime import datetime, timezone
+import threading
+import uuid as uuid_pkg
+import logging
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -10,7 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from openai import OpenAI
 from pydantic import BaseModel, Field
-from sqlalchemy import text
+from sqlalchemy import or_, text
 from sqlalchemy.orm import Session
 
 from backend.db import SessionLocal, get_db, init_database
@@ -26,6 +29,7 @@ from backend.models import (
 )
 from backend.schemas.auth import AuthResponse, LoginRequest, ProfileUpdateRequest, RegisterRequest, UserMeResponse
 from backend.schemas.cases import (
+    CaseAIStatusResponse,
     CaseExtractionPayload,
     CaseListItem,
     CaseScoresPayload,
@@ -37,6 +41,12 @@ from backend.schemas.public_data import (
     PublicDataSourceItem,
     PublicDataSyncResponse,
     PublicRecordUpsertRequest,
+)
+from backend.schemas.strategic_alerts import (
+    StrategicAlertActionResponse,
+    StrategicAlertItem,
+    StrategicAlertListResponse,
+    StrategicAlertScanResponse,
 )
 from backend.security import (
     generate_session_token,
@@ -50,7 +60,6 @@ from backend.services.cases import (
     analyze_case_with_ai,
     build_case_embedding,
     extract_text_from_document,
-    fallback_case_scores,
     fallback_extract_case_data,
     resolve_process_number,
     save_upload_bytes,
@@ -61,6 +70,15 @@ from backend.services.public_data import (
     normalize_public_record,
     save_public_records,
     sync_enabled_sources,
+)
+from backend.services.strategic_alerts import (
+    SCAN_INTERVAL_MINUTES,
+    dismiss_alert,
+    get_user_alert_by_id,
+    list_user_alerts,
+    mark_alert_as_read,
+    scan_all_users_once,
+    scan_user_now,
 )
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -81,11 +99,26 @@ SESSION_COOKIE_SAMESITE = os.getenv("SESSION_COOKIE_SAMESITE", "lax").strip().lo
 if SESSION_COOKIE_SAMESITE not in {"lax", "strict", "none"}:
     SESSION_COOKIE_SAMESITE = "lax"
 
+logger = logging.getLogger("backend.main")
+_strategic_alert_scheduler_stop = threading.Event()
+_strategic_alert_scheduler_thread: Optional[threading.Thread] = None
+_ai_case_scheduler_stop = threading.Event()
+_ai_case_scheduler_thread: Optional[threading.Thread] = None
+
+AI_STATUS_QUEUED = "queued"
+AI_STATUS_PROCESSING = "processing"
+AI_STATUS_COMPLETED = "completed"
+AI_STATUS_FAILED_RETRYABLE = "failed_retryable"
+AI_STATUS_FAILED = "failed"
+AI_STATUS_MANUAL_REVIEW = "manual_review"
+AI_PROCESSING_POLL_SECONDS = max(5, int(os.getenv("AI_PROCESSING_POLL_SECONDS", "20")))
+AI_MAX_RETRY_ATTEMPTS = max(1, int(os.getenv("AI_MAX_RETRY_ATTEMPTS", "5")))
+
 
 class ChatRequest(BaseModel):
-    prompt: str = Field(min_length=1, description="Mensagem do usuario")
+    prompt: str = Field(min_length=1, description="Mensagem do usuário")
     system_prompt: Optional[str] = Field(
-        default="Voce e um assistente juridico objetivo e preciso.",
+        default="Você é um assistente jurídico objetivo e preciso.",
         description="Contexto de sistema para a IA",
     )
     model: Optional[str] = Field(default=None, description="Modelo opcional")
@@ -117,6 +150,77 @@ class HistoryItem(BaseModel):
 
 class SearchResult(HistoryItem):
     distance: float
+
+
+def _relative_time_label(value: Optional[datetime]) -> str:
+    if value is None:
+        return "agora"
+    now = datetime.now(timezone.utc)
+    dt = value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    delta_seconds = max(0, int((now - dt).total_seconds()))
+    if delta_seconds < 60:
+        return "agora"
+    if delta_seconds < 3600:
+        return f"há {delta_seconds // 60} min"
+    if delta_seconds < 86400:
+        return f"há {delta_seconds // 3600}h"
+    return f"há {delta_seconds // 86400} dia(s)"
+
+
+def _to_strategic_alert_item(alert) -> StrategicAlertItem:
+    return StrategicAlertItem(
+        alert_id=str(alert.id),
+        type=alert.category,
+        title=alert.title,
+        desc=alert.description,
+        status=alert.status,
+        source=alert.source,
+        occurrence_count=max(1, int(alert.occurrence_count or 1)),
+        contexts=[str(item) for item in (alert.contexts or []) if str(item).strip()],
+        time=_relative_time_label(alert.notified_at or alert.last_detected_at or alert.created_at),
+        created_at=alert.created_at,
+        last_detected_at=alert.last_detected_at,
+        notified_at=alert.notified_at,
+        read_at=alert.read_at,
+        dismissed_at=alert.dismissed_at,
+    )
+
+
+def _run_strategic_alert_scheduler() -> None:
+    interval_seconds = max(60, SCAN_INTERVAL_MINUTES * 60)
+    while not _strategic_alert_scheduler_stop.is_set():
+        loop_started = datetime.now(timezone.utc)
+        try:
+            summary = scan_all_users_once(logger=logger)
+            logger.info("Strategic alerts scan completed: %s", summary)
+        except Exception:  # noqa: BLE001
+            logger.exception("Strategic alerts scan loop failed.")
+
+        elapsed = max(0.0, (datetime.now(timezone.utc) - loop_started).total_seconds())
+        wait_seconds = max(5.0, interval_seconds - elapsed)
+        _strategic_alert_scheduler_stop.wait(wait_seconds)
+
+
+def _start_strategic_alert_scheduler() -> None:
+    global _strategic_alert_scheduler_thread
+    if _strategic_alert_scheduler_thread and _strategic_alert_scheduler_thread.is_alive():
+        return
+    _strategic_alert_scheduler_stop.clear()
+    _strategic_alert_scheduler_thread = threading.Thread(
+        target=_run_strategic_alert_scheduler,
+        name="strategic-alerts-scheduler",
+        daemon=True,
+    )
+    _strategic_alert_scheduler_thread.start()
+    logger.info("Strategic alerts scheduler started (interval=%s min).", SCAN_INTERVAL_MINUTES)
+
+
+def _stop_strategic_alert_scheduler() -> None:
+    global _strategic_alert_scheduler_thread
+    _strategic_alert_scheduler_stop.set()
+    if _strategic_alert_scheduler_thread and _strategic_alert_scheduler_thread.is_alive():
+        _strategic_alert_scheduler_thread.join(timeout=5)
+    _strategic_alert_scheduler_thread = None
 
 
 def _parse_cors_origins(raw: str) -> List[str]:
@@ -182,7 +286,7 @@ def _clear_auth_cookie(response: Response) -> None:
 
 def _serve_frontend_path(path: str) -> FileResponse:
     if not FRONTEND_INDEX_FILE.exists():
-        raise HTTPException(status_code=404, detail="Frontend nao encontrado.")
+        raise HTTPException(status_code=404, detail="Frontend não encontrado.")
 
     relative = (path or "").lstrip("/")
     if relative:
@@ -190,7 +294,7 @@ def _serve_frontend_path(path: str) -> FileResponse:
         try:
             candidate.relative_to(FRONTEND_DIST_DIR.resolve())
         except ValueError as exc:
-            raise HTTPException(status_code=404, detail="Caminho invalido.") from exc
+            raise HTTPException(status_code=404, detail="Caminho inválido.") from exc
         if candidate.is_file():
             return FileResponse(candidate)
 
@@ -204,7 +308,7 @@ def _get_openai_client(optional: bool = False) -> Optional[OpenAI]:
             return None
         raise HTTPException(
             status_code=500,
-            detail="OPENAI_API_KEY nao configurada no ambiente.",
+            detail="OPENAI_API_KEY não configurada no ambiente.",
         )
     return OpenAI(api_key=api_key)
 
@@ -214,6 +318,230 @@ def _create_embedding(client: OpenAI, value: str) -> List[float]:
     dimensions = int(os.getenv("OPENAI_EMBEDDING_DIMENSIONS", "1536"))
     response = client.embeddings.create(model=embedding_model, input=value, dimensions=dimensions)
     return response.data[0].embedding
+
+
+def _retry_delay_minutes(attempt: int) -> int:
+    delays = [1, 5, 15, 30, 60, 180]
+    idx = max(0, min(len(delays) - 1, attempt - 1))
+    return delays[idx]
+
+
+def _normalize_probability(value: Optional[float]) -> Optional[float]:
+    if value is None:
+        return None
+    return max(0.0, min(1.0, float(value)))
+
+
+def _normalize_score_100(value: Optional[float]) -> Optional[float]:
+    if value is None:
+        return None
+    normalized = float(value)
+    if 0.0 <= normalized <= 1.0:
+        normalized *= 100
+    return max(0.0, min(100.0, normalized))
+
+
+def _queue_case_ai_processing(db: Session, case: ProcessCase, reset_attempts: bool = False) -> None:
+    case.ai_status = AI_STATUS_QUEUED
+    if reset_attempts:
+        case.ai_attempts = 0
+    case.ai_last_error = None
+    case.ai_next_retry_at = datetime.now(timezone.utc)
+    case.ai_processed_at = None
+
+
+def _to_case_ai_status_response(case: ProcessCase) -> CaseAIStatusResponse:
+    return CaseAIStatusResponse(
+        case_id=str(case.id),
+        ai_status=case.ai_status or AI_STATUS_QUEUED,
+        ai_attempts=int(case.ai_attempts or 0),
+        ai_next_retry_at=case.ai_next_retry_at,
+        ai_processed_at=case.ai_processed_at,
+        ai_last_error=case.ai_last_error,
+    )
+
+
+def _set_case_ai_failure(db: Session, case: ProcessCase, error: str, retryable: bool) -> None:
+    attempt = int(case.ai_attempts or 0)
+    message = (error or "Falha desconhecida na análise de IA.").strip()[:800]
+
+    if retryable and attempt < AI_MAX_RETRY_ATTEMPTS:
+        case.ai_status = AI_STATUS_FAILED_RETRYABLE
+        case.ai_next_retry_at = datetime.now(timezone.utc) + timedelta(minutes=_retry_delay_minutes(attempt))
+    else:
+        case.ai_status = AI_STATUS_FAILED if retryable else AI_STATUS_MANUAL_REVIEW
+        case.ai_next_retry_at = None
+
+    case.ai_last_error = message
+    case.ai_processed_at = None
+    db.commit()
+
+
+def _process_case_ai_enrichment(case_id: uuid_pkg.UUID) -> None:
+    with SessionLocal() as db:
+        claimed = (
+            db.query(ProcessCase)
+            .filter(
+                ProcessCase.id == case_id,
+                ProcessCase.ai_status.in_([AI_STATUS_QUEUED, AI_STATUS_FAILED_RETRYABLE]),
+            )
+            .update(
+                {
+                    ProcessCase.ai_status: AI_STATUS_PROCESSING,
+                    ProcessCase.ai_attempts: (ProcessCase.ai_attempts + 1),
+                    ProcessCase.ai_last_error: None,
+                    ProcessCase.ai_next_retry_at: None,
+                },
+                synchronize_session=False,
+            )
+        )
+        db.commit()
+        if not claimed:
+            return
+
+        case = db.query(ProcessCase).filter(ProcessCase.id == case_id).first()
+        if case is None:
+            return
+
+        client = _get_openai_client(optional=True)
+        if client is None:
+            _set_case_ai_failure(db, case, "OPENAI_API_KEY não configurada para análise de IA.", retryable=False)
+            return
+
+        document = (
+            db.query(ProcessDocument)
+            .filter(ProcessDocument.case_id == case.id)
+            .order_by(ProcessDocument.created_at.desc())
+            .first()
+        )
+        extracted_text = (document.extracted_text if document and document.extracted_text else "").strip()
+        if not extracted_text:
+            _set_case_ai_failure(db, case, "Texto do documento indisponível para análise.", retryable=False)
+            return
+
+        fallback_extraction = fallback_extract_case_data(
+            text=extracted_text,
+            process_number=case.process_number,
+            tribunal=case.tribunal,
+            judge=case.judge,
+            action_type=case.action_type,
+            claim_value=case.claim_value,
+        )
+
+        try:
+            extraction, scores = analyze_case_with_ai(
+                client=client,
+                text=extracted_text,
+                filename=document.filename if document else "processo.bin",
+                process_number=case.process_number,
+                tribunal=case.tribunal,
+                judge=case.judge,
+                action_type=case.action_type,
+                claim_value=case.claim_value,
+            )
+        except Exception as exc:  # noqa: BLE001
+            _set_case_ai_failure(db, case, f"Falha ao analisar caso com IA: {exc}", retryable=True)
+            return
+
+        try:
+            case_embedding = build_case_embedding(client, extracted_text)
+        except Exception:
+            case_embedding = None
+
+        final_extraction = extraction or fallback_extraction
+        final_process_number = resolve_process_number(case.process_number, final_extraction.process_number)
+
+        success_probability = _normalize_probability(scores.success_probability)
+        settlement_probability = _normalize_probability(scores.settlement_probability)
+        expected_decision_months = max(0.0, float(scores.expected_decision_months))
+        risk_score = _normalize_score_100(scores.risk_score)
+        complexity_score = _normalize_score_100(scores.complexity_score)
+
+        case.process_number = final_process_number
+        case.title = final_extraction.title or case.title
+        case.tribunal = final_extraction.tribunal or case.tribunal
+        case.judge = final_extraction.judge or case.judge
+        case.action_type = final_extraction.action_type or case.action_type
+        case.claim_value = final_extraction.claim_value or case.claim_value
+        case.status = case.status or final_extraction.status or "em_andamento"
+        case.extracted_fields = final_extraction.model_dump(mode="json")
+        case.ai_summary = (scores.ai_summary or "").strip()
+        case.success_probability = success_probability
+        case.settlement_probability = settlement_probability
+        case.expected_decision_months = expected_decision_months
+        case.risk_score = risk_score
+        case.complexity_score = complexity_score
+        if case_embedding is not None:
+            case.case_embedding = case_embedding
+
+        db.query(CaseDeadline).filter(CaseDeadline.case_id == case.id).delete(synchronize_session=False)
+        for deadline in final_extraction.deadlines:
+            db.add(
+                CaseDeadline(
+                    case_id=case.id,
+                    label=deadline.label,
+                    due_date=deadline.due_date,
+                    severity=deadline.severity,
+                ),
+            )
+
+        case.ai_status = AI_STATUS_COMPLETED
+        case.ai_last_error = None
+        case.ai_next_retry_at = None
+        case.ai_processed_at = datetime.now(timezone.utc)
+        db.commit()
+
+
+def _run_ai_case_scheduler() -> None:
+    while not _ai_case_scheduler_stop.is_set():
+        now = datetime.now(timezone.utc)
+        case_ids: List[uuid_pkg.UUID] = []
+
+        try:
+            with SessionLocal() as db:
+                due_rows = (
+                    db.query(ProcessCase.id)
+                    .filter(
+                        ProcessCase.ai_status.in_([AI_STATUS_QUEUED, AI_STATUS_FAILED_RETRYABLE]),
+                        or_(ProcessCase.ai_next_retry_at.is_(None), ProcessCase.ai_next_retry_at <= now),
+                    )
+                    .order_by(ProcessCase.created_at.asc())
+                    .limit(20)
+                    .all()
+                )
+                case_ids = [row.id for row in due_rows]
+        except Exception:  # noqa: BLE001
+            logger.exception("Falha ao buscar fila de processamento de IA.")
+
+        for case_id in case_ids:
+            try:
+                _process_case_ai_enrichment(case_id)
+            except Exception:  # noqa: BLE001
+                logger.exception("Falha inesperada no processamento assíncrono da IA para case_id=%s.", case_id)
+
+        _ai_case_scheduler_stop.wait(AI_PROCESSING_POLL_SECONDS)
+
+
+def _start_ai_case_scheduler() -> None:
+    global _ai_case_scheduler_thread
+    if _ai_case_scheduler_thread and _ai_case_scheduler_thread.is_alive():
+        return
+    _ai_case_scheduler_stop.clear()
+    _ai_case_scheduler_thread = threading.Thread(
+        target=_run_ai_case_scheduler,
+        name="ai-case-scheduler",
+        daemon=True,
+    )
+    _ai_case_scheduler_thread.start()
+    logger.info("AI case scheduler started (poll=%s sec).", AI_PROCESSING_POLL_SECONDS)
+
+
+def _stop_ai_case_scheduler() -> None:
+    global _ai_case_scheduler_thread
+    _ai_case_scheduler_stop.set()
+    if _ai_case_scheduler_thread and _ai_case_scheduler_thread.is_alive():
+        _ai_case_scheduler_thread.join(timeout=5)
+    _ai_case_scheduler_thread = None
 
 
 def _to_source_item(source: PublicDataSource) -> PublicDataSourceItem:
@@ -277,7 +605,7 @@ def get_current_user(
     db: Session = Depends(get_db),
 ) -> User:
     if not session_token:
-        raise HTTPException(status_code=401, detail="Nao autenticado.")
+        raise HTTPException(status_code=401, detail="Não autenticado.")
 
     token_hash = hash_session_token(session_token)
     session = (
@@ -289,17 +617,17 @@ def get_current_user(
         .first()
     )
     if not session:
-        raise HTTPException(status_code=401, detail="Sessao invalida.")
+        raise HTTPException(status_code=401, detail="Sessão inválida.")
 
     expires_at = _as_utc(session.expires_at)
     if expires_at and expires_at <= datetime.now(timezone.utc):
         session.revoked_at = datetime.now(timezone.utc)
         db.commit()
-        raise HTTPException(status_code=401, detail="Sessao expirada.")
+        raise HTTPException(status_code=401, detail="Sessão expirada.")
 
     user = db.query(User).filter(User.id == session.user_id).first()
     if not user:
-        raise HTTPException(status_code=401, detail="Usuario nao encontrado.")
+        raise HTTPException(status_code=401, detail="Usuário não encontrado.")
     return user
 
 
@@ -328,7 +656,7 @@ def health() -> Dict[str, str]:
 def auth_register(payload: RegisterRequest, response: Response, db: Session = Depends(get_db)) -> AuthResponse:
     email = _normalize_email(payload.email)
     if not _is_valid_email(email):
-        raise HTTPException(status_code=400, detail="E-mail invalido.")
+        raise HTTPException(status_code=400, detail="E-mail inválido.")
 
     existing = db.query(User).filter(User.username == email).first()
     if existing:
@@ -373,11 +701,11 @@ def auth_register(payload: RegisterRequest, response: Response, db: Session = De
 def auth_login(payload: LoginRequest, response: Response, db: Session = Depends(get_db)) -> AuthResponse:
     email = _normalize_email(payload.email)
     if not _is_valid_email(email):
-        raise HTTPException(status_code=400, detail="E-mail invalido.")
+        raise HTTPException(status_code=400, detail="E-mail inválido.")
 
     user = db.query(User).filter(User.username == email).first()
     if not user or not verify_password(payload.password, user.password):
-        raise HTTPException(status_code=401, detail="Credenciais invalidas.")
+        raise HTTPException(status_code=401, detail="Credenciais inválidas.")
 
     profile = db.query(UserProfile).filter(UserProfile.user_id == user.id).first()
     if not profile:
@@ -456,14 +784,15 @@ def update_profile(
 @app.get("/api/dashboard", response_model=DashboardData)
 def get_dashboard_data(
     tribunal: str = Query(default="Todos os Tribunais"),
-    juiz: str = Query(default="Todos os Juizes"),
+    juiz: str = Query(default="Todos os Juízes"),
     tipo_acao: str = Query(default="Todos os Tipos"),
     faixa_valor: str = Query(default="Todos os Valores"),
-    periodo: str = Query(default="Ultimos 6 meses"),
+    periodo: str = Query(default="Últimos 6 meses"),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> DashboardData:
-    return build_dashboard_data(
+    ai_client = _get_openai_client(optional=True)
+    dashboard = build_dashboard_data(
         db=db,
         user_id=current_user.id,
         tribunal=tribunal,
@@ -471,7 +800,82 @@ def get_dashboard_data(
         tipo_acao=tipo_acao,
         faixa_valor=faixa_valor,
         periodo=periodo,
+        ai_client=ai_client,
     )
+    return dashboard
+
+
+@app.get("/api/strategic-alerts", response_model=StrategicAlertListResponse)
+def get_strategic_alerts(
+    status: str = Query(default="active"),
+    limit: int = Query(default=50, ge=1, le=200),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> StrategicAlertListResponse:
+    normalized_status = (status or "active").strip().lower()
+    if normalized_status not in {"active", "new", "read", "dismissed", "all"}:
+        raise HTTPException(status_code=400, detail="Status inválido. Use: active|new|read|dismissed|all")
+
+    rows = list_user_alerts(db=db, user_id=current_user.id, status=normalized_status, limit=limit)
+    return StrategicAlertListResponse(
+        total=len(rows),
+        status_filter=normalized_status,
+        generated_at=datetime.now(timezone.utc),
+        items=[_to_strategic_alert_item(item) for item in rows],
+    )
+
+
+@app.post("/api/strategic-alerts/scan", response_model=StrategicAlertScanResponse)
+def trigger_strategic_alert_scan(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> StrategicAlertScanResponse:
+    result = scan_user_now(db=db, user_id=current_user.id)
+    return StrategicAlertScanResponse(
+        ok=True,
+        scanned=result["scanned"],
+        created=result["created"],
+        updated=result["updated"],
+        notified=result["notified"],
+    )
+
+
+@app.post("/api/strategic-alerts/{alert_id}/read", response_model=StrategicAlertActionResponse)
+def read_strategic_alert(
+    alert_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> StrategicAlertActionResponse:
+    try:
+        parsed_alert_id = uuid_pkg.UUID(alert_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="ID de alerta inválido.") from exc
+
+    alert = get_user_alert_by_id(db=db, user_id=current_user.id, alert_id=parsed_alert_id)
+    if alert is None:
+        raise HTTPException(status_code=404, detail="Alerta não encontrado.")
+
+    updated_alert = mark_alert_as_read(db=db, alert=alert)
+    return StrategicAlertActionResponse(ok=True, alert=_to_strategic_alert_item(updated_alert))
+
+
+@app.post("/api/strategic-alerts/{alert_id}/dismiss", response_model=StrategicAlertActionResponse)
+def dismiss_strategic_alert(
+    alert_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> StrategicAlertActionResponse:
+    try:
+        parsed_alert_id = uuid_pkg.UUID(alert_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="ID de alerta inválido.") from exc
+
+    alert = get_user_alert_by_id(db=db, user_id=current_user.id, alert_id=parsed_alert_id)
+    if alert is None:
+        raise HTTPException(status_code=404, detail="Alerta não encontrado.")
+
+    updated_alert = dismiss_alert(db=db, alert=alert)
+    return StrategicAlertActionResponse(ok=True, alert=_to_strategic_alert_item(updated_alert))
 
 
 @app.get("/api/cases", response_model=List[CaseListItem])
@@ -501,6 +905,11 @@ def list_cases(
             expected_decision_months=item.expected_decision_months,
             risk_score=item.risk_score,
             complexity_score=item.complexity_score,
+            ai_status=item.ai_status or AI_STATUS_QUEUED,
+            ai_attempts=int(item.ai_attempts or 0),
+            ai_next_retry_at=item.ai_next_retry_at,
+            ai_processed_at=item.ai_processed_at,
+            ai_last_error=item.ai_last_error,
             created_at=item.created_at,
         )
         for item in rows
@@ -527,7 +936,7 @@ async def upload_case(
     storage_path = save_upload_bytes(original_filename, payload)
     extracted_text = extract_text_from_document(storage_path, original_filename, file.content_type)
     if not extracted_text:
-        extracted_text = "Nao foi possivel extrair texto automaticamente deste arquivo."
+        extracted_text = "Não foi possível extrair texto automaticamente deste arquivo."
 
     process_number_norm = _normalize_optional_text(process_number)
     tribunal_norm = _normalize_optional_text(tribunal)
@@ -543,29 +952,6 @@ async def upload_case(
         action_type=action_type_norm,
         claim_value=claim_value,
     )
-    scores: CaseScoresPayload = fallback_case_scores(extraction, extracted_text)
-
-    client = _get_openai_client(optional=True)
-    case_embedding = None
-    if client:
-        try:
-            extraction, scores = analyze_case_with_ai(
-                client=client,
-                text=extracted_text,
-                filename=original_filename,
-                process_number=process_number_norm,
-                tribunal=tribunal_norm,
-                judge=judge_norm,
-                action_type=action_type_norm,
-                claim_value=claim_value,
-            )
-        except Exception:
-            pass
-
-        try:
-            case_embedding = build_case_embedding(client, extracted_text)
-        except Exception:
-            case_embedding = None
 
     final_process_number = resolve_process_number(process_number_norm, extraction.process_number)
     case = ProcessCase(
@@ -578,13 +964,18 @@ async def upload_case(
         claim_value=extraction.claim_value or claim_value,
         status=status_norm or extraction.status or "em_andamento",
         extracted_fields=extraction.model_dump(mode="json"),
-        ai_summary=scores.ai_summary,
-        success_probability=scores.success_probability,
-        settlement_probability=scores.settlement_probability,
-        expected_decision_months=scores.expected_decision_months,
-        risk_score=scores.risk_score,
-        complexity_score=scores.complexity_score,
-        case_embedding=case_embedding,
+        ai_summary=None,
+        success_probability=None,
+        settlement_probability=None,
+        expected_decision_months=None,
+        risk_score=None,
+        complexity_score=None,
+        case_embedding=None,
+        ai_status=AI_STATUS_QUEUED,
+        ai_attempts=0,
+        ai_last_error=None,
+        ai_next_retry_at=datetime.now(timezone.utc),
+        ai_processed_at=None,
     )
     db.add(case)
     db.flush()
@@ -615,9 +1006,68 @@ async def upload_case(
         case_id=str(case.id),
         process_number=case.process_number,
         extracted=extraction,
-        scores=scores,
+        scores=None,
+        ai_status=case.ai_status or AI_STATUS_QUEUED,
+        ai_attempts=int(case.ai_attempts or 0),
+        ai_next_retry_at=case.ai_next_retry_at,
+        ai_last_error=case.ai_last_error,
         created_at=case.created_at,
     )
+
+
+@app.post("/api/cases/{case_id}/reprocess-ai", response_model=CaseAIStatusResponse)
+def reprocess_case_ai(
+    case_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> CaseAIStatusResponse:
+    try:
+        parsed_case_id = uuid_pkg.UUID(case_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="ID de caso inválido.") from exc
+
+    case = (
+        db.query(ProcessCase)
+        .filter(
+            ProcessCase.id == parsed_case_id,
+            ProcessCase.user_id == current_user.id,
+        )
+        .first()
+    )
+    if case is None:
+        raise HTTPException(status_code=404, detail="Caso não encontrado.")
+
+    if case.ai_status == AI_STATUS_PROCESSING:
+        return _to_case_ai_status_response(case)
+
+    _queue_case_ai_processing(db, case, reset_attempts=True)
+    db.commit()
+    db.refresh(case)
+    return _to_case_ai_status_response(case)
+
+
+@app.get("/api/cases/{case_id}/ai-status", response_model=CaseAIStatusResponse)
+def get_case_ai_status(
+    case_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> CaseAIStatusResponse:
+    try:
+        parsed_case_id = uuid_pkg.UUID(case_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="ID de caso inválido.") from exc
+
+    case = (
+        db.query(ProcessCase)
+        .filter(
+            ProcessCase.id == parsed_case_id,
+            ProcessCase.user_id == current_user.id,
+        )
+        .first()
+    )
+    if case is None:
+        raise HTTPException(status_code=404, detail="Caso não encontrado.")
+    return _to_case_ai_status_response(case)
 
 
 @app.get("/api/public-data/sources", response_model=List[PublicDataSourceItem])
@@ -825,7 +1275,7 @@ def frontend_root() -> FileResponse:
 @app.get("/{full_path:path}", include_in_schema=False)
 def frontend_catch_all(full_path: str) -> FileResponse:
     if full_path == "health" or full_path.startswith("api/"):
-        raise HTTPException(status_code=404, detail="Nao encontrado.")
+        raise HTTPException(status_code=404, detail="Não encontrado.")
     return _serve_frontend_path(full_path)
 
 
@@ -835,5 +1285,13 @@ def on_startup() -> None:
         init_database()
         with SessionLocal() as db:
             ensure_default_public_sources(db)
+        _start_strategic_alert_scheduler()
+        _start_ai_case_scheduler()
     except Exception as exc:  # noqa: BLE001
         raise RuntimeError(f"Falha ao inicializar Postgres/pgvector: {exc}") from exc
+
+
+@app.on_event("shutdown")
+def on_shutdown() -> None:
+    _stop_strategic_alert_scheduler()
+    _stop_ai_case_scheduler()

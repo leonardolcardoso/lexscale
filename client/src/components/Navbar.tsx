@@ -19,7 +19,7 @@ export function Navbar() {
     event.preventDefault();
     setMenuOpen(false);
 
-    if (location !== "/" && !location.startsWith("/#")) {
+    if (location !== "/") {
       setLocation("/");
       window.setTimeout(() => {
         window.scrollTo({ top: 0, behavior: "smooth" });
@@ -27,7 +27,9 @@ export function Navbar() {
       return;
     }
 
-    window.history.pushState(null, "", "/");
+    if (window.location.hash) {
+      window.history.replaceState(window.history.state, "", "/");
+    }
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
@@ -35,13 +37,13 @@ export function Navbar() {
     const hash = href.split("#")[1];
     if (!hash) return;
 
-    if (location === "/" || location.startsWith("/#")) {
+    if (location === "/") {
       event.preventDefault();
       const section = document.getElementById(hash);
       if (section) {
         section.scrollIntoView({ behavior: "smooth", block: "start" });
       }
-      window.history.pushState(null, "", `/#${hash}`);
+      window.history.replaceState(window.history.state, "", `/#${hash}`);
       setMenuOpen(false);
       return;
     }
@@ -55,13 +57,17 @@ export function Navbar() {
     <header className="sticky top-0 z-50 w-full bg-slate-950/95 px-3 pt-3 backdrop-blur-md md:px-6 md:pt-4">
       <div className="mx-auto max-w-7xl rounded-2xl border border-slate-800/85 bg-slate-950/80 backdrop-blur-xl shadow-[0_12px_35px_rgba(2,6,23,0.45)]">
         <div className="flex h-16 items-center justify-between px-4 md:h-20 md:px-6">
-          <Link href="/" onClick={handleLogoClick} className="flex items-center gap-2.5">
+          <Link
+            href="/"
+            onClick={handleLogoClick}
+            className="flex items-center gap-2.5 rounded-xl border border-slate-200/80 bg-slate-100/95 px-2.5 py-1.5 shadow-sm transition-colors dark:border-slate-700/80 dark:bg-slate-900/70"
+          >
             <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-blue-700 via-blue-600 to-cyan-500 text-white shadow-lg shadow-blue-600/25">
               <Scale className="h-5 w-5" />
             </div>
             <div>
-              <p className="text-xl font-extrabold tracking-tight text-white">LexScale</p>
-              <p className="-mt-0.5 text-[11px] font-medium uppercase tracking-[0.18em] text-slate-400">IA Jurídica</p>
+              <p className="text-xl font-extrabold tracking-tight text-slate-800 dark:text-slate-100">LexScale</p>
+              <p className="-mt-0.5 text-[11px] font-medium uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">IA Jurídica</p>
             </div>
           </Link>
 
@@ -80,7 +86,10 @@ export function Navbar() {
 
           <div className="hidden items-center gap-3 md:flex">
             <Link href="/auth?tab=login">
-              <Button variant="ghost" className="font-semibold text-slate-300 hover:bg-slate-800 hover:text-white">
+              <Button
+                variant="ghost"
+                className="rounded-full px-5 font-semibold text-slate-700 hover:bg-slate-200 hover:text-slate-900 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-white"
+              >
                 Login
               </Button>
             </Link>

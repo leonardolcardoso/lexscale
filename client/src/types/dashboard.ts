@@ -75,6 +75,10 @@ export type DashboardData = {
       tag_color: string;
       data: Array<{ label: string; val: string; color?: string | null }>;
       footer: string;
+      detail_title?: string;
+      detail_summary?: string;
+      next_step_title?: string;
+      next_step_text?: string;
     }>;
     impact_metrics: Array<{
       label: string;
@@ -112,13 +116,17 @@ export type UploadCaseResponse = {
     claim_value?: number | null;
     status?: string | null;
   };
-  scores: {
+  scores?: {
     success_probability: number;
     settlement_probability: number;
     expected_decision_months: number;
     risk_score: number;
     complexity_score: number;
     ai_summary: string;
-  };
+  } | null;
+  ai_status: "queued" | "processing" | "completed" | "failed_retryable" | "failed" | "manual_review";
+  ai_attempts: number;
+  ai_next_retry_at?: string | null;
+  ai_last_error?: string | null;
   created_at: string;
 };

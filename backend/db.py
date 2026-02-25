@@ -14,7 +14,7 @@ load_dotenv()
 DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
     raise RuntimeError(
-        "DATABASE_URL nao configurada. Defina em backend/.env para conectar no Postgres.",
+        "DATABASE_URL não configurada. Defina em backend/.env para conectar no Postgres.",
     )
 
 # Some providers (and templates) expose DATABASE_URL using placeholders like
@@ -61,6 +61,33 @@ def init_database() -> None:
                 text("CREATE INDEX IF NOT EXISTS ix_process_cases_user_id ON process_cases (user_id)"),
             )
             connection.execute(
+                text("ALTER TABLE IF EXISTS process_cases ADD COLUMN IF NOT EXISTS ai_status TEXT"),
+            )
+            connection.execute(
+                text("ALTER TABLE IF EXISTS process_cases ADD COLUMN IF NOT EXISTS ai_attempts INTEGER"),
+            )
+            connection.execute(
+                text("ALTER TABLE IF EXISTS process_cases ADD COLUMN IF NOT EXISTS ai_last_error TEXT"),
+            )
+            connection.execute(
+                text("ALTER TABLE IF EXISTS process_cases ADD COLUMN IF NOT EXISTS ai_next_retry_at TIMESTAMPTZ"),
+            )
+            connection.execute(
+                text("ALTER TABLE IF EXISTS process_cases ADD COLUMN IF NOT EXISTS ai_processed_at TIMESTAMPTZ"),
+            )
+            connection.execute(
+                text("UPDATE process_cases SET ai_status = COALESCE(ai_status, 'queued')"),
+            )
+            connection.execute(
+                text("UPDATE process_cases SET ai_attempts = COALESCE(ai_attempts, 0)"),
+            )
+            connection.execute(
+                text("CREATE INDEX IF NOT EXISTS ix_process_cases_ai_status ON process_cases (ai_status)"),
+            )
+            connection.execute(
+                text("CREATE INDEX IF NOT EXISTS ix_process_cases_ai_next_retry_at ON process_cases (ai_next_retry_at)"),
+            )
+            connection.execute(
                 text("ALTER TABLE IF EXISTS ai_messages ADD COLUMN IF NOT EXISTS user_id UUID"),
             )
             connection.execute(
@@ -73,6 +100,14 @@ def init_database() -> None:
             if "does not exist" not in message:
                 raise
     Base.metadata.create_all(bind=engine)
+
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_strategic_alerts_user_status_last_detected "
+                "ON strategic_alerts (user_id, status, last_detected_at DESC)",
+            ),
+        )
 
 
 def get_db():

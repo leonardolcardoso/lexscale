@@ -56,25 +56,42 @@ npm run dev:backend
 - `POST /api/ai/chat`
 - `GET /api/ai/history`
 - `POST /api/ai/search`
+- `GET /api/strategic-alerts`
+- `POST /api/strategic-alerts/scan`
+- `POST /api/strategic-alerts/{alert_id}/read`
+- `POST /api/strategic-alerts/{alert_id}/dismiss`
 
-Observacao: todos os endpoints `/api/*` (exceto login/registro) exigem sessao autenticada via cookie HTTP-only.
+Observação: todos os endpoints `/api/*` (exceto login/registro) exigem sessão autenticada via cookie HTTP-only.
 
-Inventario completo dos dados do dashboard:
+## Alertas estratégicos (scheduler)
+
+O backend executa um scan recorrente para gerar alertas por usuário e evitar spam com cooldown por categoria.
+
+Configurações via ambiente:
+- `STRATEGIC_ALERT_SCAN_INTERVAL_MINUTES` (default: `30`)
+- `STRATEGIC_ALERT_MAX_SCOPES` (default: `8`)
+- `STRATEGIC_ALERT_COOLDOWN_CRITICAL_MINUTES` (default: `60`)
+- `STRATEGIC_ALERT_COOLDOWN_WARNING_MINUTES` (default: `180`)
+- `STRATEGIC_ALERT_COOLDOWN_OPPORTUNITY_MINUTES` (default: `240`)
+- `STRATEGIC_ALERT_COOLDOWN_INFO_MINUTES` (default: `360`)
+- `STRATEGIC_ALERT_SCAN_LOCK_KEY` (default: `91350231`, lock distribuído no Postgres)
+
+Inventário completo dos dados do dashboard:
 - `/Users/pedrobrugger/Projects/lexScale/repos/lexscale/docs/dashboard-data-inventory.md`
 
 Exemplo de body:
 
 ```json
 {
-  "prompt": "Resuma os principais riscos desta clausula contratual.",
-  "system_prompt": "Voce e um advogado senior especializado em contratos.",
+  "prompt": "Resuma os principais riscos desta cláusula contratual.",
+  "system_prompt": "Você é um advogado sênior especializado em contratos.",
   "model": "gpt-4.1-mini",
   "temperature": 0.2,
   "max_output_tokens": 600
 }
 ```
 
-Exemplo de cadastro de fonte publica:
+Exemplo de cadastro de fonte pública:
 
 ```json
 {
@@ -86,9 +103,9 @@ Exemplo de cadastro de fonte publica:
 }
 ```
 
-## APIs reais ja conectadas por padrao
+## APIs reais já conectadas por padrão
 
-Na inicializacao, o backend cadastra automaticamente:
+Na inicialização, o backend cadastra automaticamente:
 - `tjdft_jurisprudencia` -> `https://jurisdf.tjdft.jus.br/api/v1/pesquisa`
 - `trf5_transparencia_documentos` -> `https://api-transparencia.trf5.jus.br/api/v1/documento/tipo`
 
@@ -96,7 +113,7 @@ Controle da coleta TJDFT via ambiente:
 - `PUBLIC_SYNC_TJDFT_QUERY` (default: `direito civil`)
 - `PUBLIC_SYNC_TJDFT_PAGE_SIZE` (default: `40`)
 
-Exemplo de ingestao manual de registros:
+Exemplo de ingestão manual de registros:
 
 ```json
 {
@@ -105,9 +122,9 @@ Exemplo de ingestao manual de registros:
     {
       "process_number": "0001234-56.2024.8.26.0100",
       "tribunal": "TJSP",
-      "judge": "Dr. Joao Silva",
+      "judge": "Dr. João Silva",
       "action_type": "Trabalhista",
-      "status": "sentenca",
+      "status": "sentença",
       "outcome": "procedente",
       "claim_value": 82000,
       "duration_days": 146,
@@ -120,11 +137,11 @@ Exemplo de ingestao manual de registros:
 
 ## Deploy no Railway
 
-Deploy recomendado: **1 servico Docker** (FastAPI + frontend buildado).
+Deploy recomendado: **1 serviço Docker** (FastAPI + frontend buildado).
 
 1. Crie um projeto no Railway e conecte este repo.
 2. Adicione um banco Postgres no Railway.
-3. Configure as variaveis de ambiente:
+3. Configure as variáveis de ambiente:
    - `DATABASE_URL` (do Postgres do Railway)
    - `OPENAI_API_KEY`
    - `OPENAI_MODEL` (opcional)

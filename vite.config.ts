@@ -5,6 +5,8 @@ import path from "path";
 import runtimeErrorOverlay from "@replit/vite-plugin-runtime-error-modal";
 import { metaImagesPlugin } from "./vite-plugin-meta-images";
 
+const backendProxyTarget = process.env.BACKEND_PROXY_TARGET || "http://127.0.0.1:8000";
+
 export default defineConfig({
   plugins: [
     react(),
@@ -45,11 +47,11 @@ export default defineConfig({
     allowedHosts: true,
     proxy: {
       "/api": {
-        target: "http://127.0.0.1:8000",
+        target: backendProxyTarget,
         changeOrigin: true,
       },
       "/health": {
-        target: "http://127.0.0.1:8000",
+        target: backendProxyTarget,
         changeOrigin: true,
       },
     },

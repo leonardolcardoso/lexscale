@@ -176,14 +176,14 @@ def _guess_action_type(text: str) -> str:
     if "trabalh" in lowered:
         return "Trabalhista"
     if "tribut" in lowered:
-        return "Tributario"
+        return "Tributário"
     if "famil" in lowered:
-        return "Familia"
+        return "Família"
     if any(term in lowered for term in ["falencia", "recuperacao judicial", "societar", "direito comercial"]):
         return "Comercial"
     if any(term in lowered for term in ["cumprimento de decisao", "oficio", "procuradoria", "administrativo", "militar"]):
-        return "Civel"
-    return "Civel"
+        return "Cível"
+    return "Cível"
 
 
 def _guess_status(text: str) -> str:
@@ -256,8 +256,8 @@ def fallback_case_scores(extraction: CaseExtractionPayload, text: str) -> CaseSc
     complexity = round(_clamp((length_factor * 70) + (claim_factor * 30), 10, 95), 1)
 
     summary = (
-        f"Analise inicial: probabilidade de exito estimada em {round(success * 100)}%, "
-        f"chance de acordo em {round(settlement * 100)}% e tempo medio de {months} meses."
+        f"Análise inicial: probabilidade de êxito estimada em {round(success * 100)}%, "
+        f"chance de acordo em {round(settlement * 100)}% e tempo médio de {months} meses."
     )
     return CaseScoresPayload(
         success_probability=round(success, 4),
@@ -281,8 +281,8 @@ def analyze_case_with_ai(
 ) -> Tuple[CaseExtractionPayload, CaseScoresPayload]:
     truncated = text[:18000] if text else ""
     system_prompt = (
-        "Voce e um analista juridico no Brasil. "
-        "Extraia dados estruturados e retorne APENAS JSON valido."
+        "Você é um analista jurídico no Brasil. "
+        "Extraia dados estruturados e retorne APENAS JSON válido."
     )
     user_prompt = (
         "Analise o documento judicial abaixo e responda com JSON no formato:\n"

@@ -21,14 +21,17 @@ function extractApiDetail(rawText: string): string {
       return parsed.detail;
     }
   } catch {
-    // resposta nao era JSON.
+    // Resposta não era JSON.
   }
 
   return text;
 }
 
 function mapFriendlyMessage(status: number, detail: string): string {
-  const normalized = detail.toLowerCase();
+  const normalized = detail
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
 
   if (status === 400 && normalized.includes("e-mail")) {
     return "Informe um e-mail válido para continuar.";
