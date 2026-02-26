@@ -203,13 +203,17 @@ def _looks_like_person_name(candidate: str) -> bool:
 
 
 def _extract_judge_name(text: str) -> Optional[str]:
-    head = "\n".join(text.splitlines()[:220])
+    head = "\n".join(text.splitlines()[:280])
     patterns = [
-        r"(?:Ju[ií]z(?:a)?|Magistrad[oa]|Relator(?:a)?|Desembargador(?:a)?(?:\s+Federal)?|Ministro(?:a)?)\s*[:\-]\s*([A-ZÀ-Ý][A-Za-zÀ-ÿ'.-]*(?:\s+(?:[A-ZÀ-Ý][A-Za-zÀ-ÿ'.-]*|de|da|do|dos|das|e)){1,8})",
+        r"(?:Ju[ií]z(?:a)?(?:\s+Federal)?(?:\s+Convocado)?|Magistrad[oa]|Relator(?:a)?|Desembargador(?:a)?(?:\s+Federal)?|Ministro(?:a)?)\s*[:\-]\s*([A-ZÀ-Ý][A-Za-zÀ-ÿ'.-]*(?:\s+(?:[A-ZÀ-Ý][A-Za-zÀ-ÿ'.-]*|de|da|do|dos|das|e)){1,8})",
         r"Assinado\s+por\s*[:\-]\s*([A-ZÀ-Ý][A-Za-zÀ-ÿ'.-]*(?:\s+(?:[A-ZÀ-Ý][A-Za-zÀ-ÿ'.-]*|de|da|do|dos|das|e)){1,8})",
+        r"(?:Ju[ií]z(?:a)?\s+Federal)\s+([A-ZÀ-Ý][A-Za-zÀ-ÿ'.-]*(?:\s+(?:[A-ZÀ-Ý][A-Za-zÀ-ÿ'.-]*|de|da|do|dos|das|e)){1,8})(?:\s*[,\.]|$)",
+        r"(?:À\s+disposi[cç][aã]o|À\s+disposicao)[,\s]+([A-ZÀ-Ý][A-Za-zÀ-ÿ'.-]*(?:\s+(?:[A-ZÀ-Ý][A-Za-zÀ-ÿ'.-]*|de|da|do|dos|das|e)){1,8})",
+        r"(?:Dr\.?|Dra\.?)\s+([A-ZÀ-Ý][A-Za-zÀ-ÿ'.-]*(?:\s+(?:[A-ZÀ-Ý][A-Za-zÀ-ÿ'.-]*|de|da|do|dos|das|e)){1,6})\s*(?:\n|,|\s+Juiz|\s+Ju[ií]za)",
+        r"Juiz\s+(?:da|de)\s+\d+[ªa]?\s+Vara\s+Federal[^.]*?[:\-]\s*([A-ZÀ-Ý][A-Za-zÀ-ÿ'.-]*(?:\s+(?:[A-ZÀ-Ý][A-Za-zÀ-ÿ'.-]*|de|da|do|dos|das|e)){1,8})",
     ]
     for pattern in patterns:
-        for found in re.finditer(pattern, head, flags=re.IGNORECASE):
+        for found in re.finditer(pattern, head, flags=re.IGNORECASE | re.MULTILINE):
             candidate = re.sub(r"\s+", " ", found.group(1)).strip(" .,:;-")
             if _looks_like_person_name(candidate):
                 return candidate[:140]

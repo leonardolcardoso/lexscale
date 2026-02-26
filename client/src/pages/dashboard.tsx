@@ -1703,7 +1703,7 @@ export default function Dashboard() {
     }
     const dataSourceLine = isDemoMode
       ? "Fonte: modo DEMO com dados simulados."
-      : "Fonte: dados reais do backend (IA + APIs externas sincronizadas, ex.: Jusbrasil).";
+      : "Fonte: IA + JusBrasil e outras fontes públicas.";
     const incomingLines = detail.lines || [];
 
     if (detail.variant === "scenario") {
