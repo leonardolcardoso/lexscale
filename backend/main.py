@@ -1544,6 +1544,43 @@ def get_case_ai_status(
     return _to_case_ai_status_response(case)
 
 
+@app.delete("/api/cases/{case_id}", status_code=204)
+def delete_case(
+    case_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> None:
+    try:
+        parsed_case_id = uuid_pkg.UUID(case_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="ID de caso inválido.") from exc
+
+    case = (
+        db.query(ProcessCase)
+        .filter(
+            ProcessCase.id == parsed_case_id,
+            ProcessCase.user_id == current_user.id,
+        )
+        .first()
+    )
+    if case is None:
+        raise HTTPException(status_code=404, detail="Caso não encontrado.")
+
+    # Coletar caminhos dos arquivos antes de deletar (cascade remove os registros)
+    paths_to_delete = [Path(doc.storage_path) for doc in case.documents if doc.storage_path]
+
+    db.delete(case)
+    db.commit()
+
+    # Remover arquivos do disco para a IA não ter mais o dado
+    for path in paths_to_delete:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError as e:
+            logger.warning("Não foi possível remover arquivo do caso %s: %s", case_id, e)
+    return None
+
+
 @app.get("/api/public-data/sources", response_model=List[PublicDataSourceItem])
 def list_public_sources(
     _current_user: User = Depends(get_current_user),

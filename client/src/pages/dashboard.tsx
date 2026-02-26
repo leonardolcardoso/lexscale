@@ -24,6 +24,8 @@ import {
   RefreshCcw,
   History,
   ChevronDown,
+  ChevronUp,
+  Trash2,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -43,6 +45,16 @@ import type {
   UserCaseListItem,
 } from "@/types/dashboard";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 
 const DEFAULT_FILTERS: DashboardFilters = {
   tribunal: "Todos os Tribunais",
@@ -413,10 +425,10 @@ function buildDashboardUrl(filters: DashboardFilters) {
   return `/api/dashboard?${params.toString()}`;
 }
 
-function formatUpdatedLabel(generatedAt: string | undefined): string {
-  if (!generatedAt) return "Atualizando...";
-  const then = new Date(generatedAt).getTime();
-  if (Number.isNaN(then)) return "Atualizando...";
+function formatUpdatedLabel(lastUpdateAt: string | undefined): string {
+  if (!lastUpdateAt) return "Nenhum dado de upload ainda";
+  const then = new Date(lastUpdateAt).getTime();
+  if (Number.isNaN(then)) return "Nenhum dado de upload ainda";
   const now = Date.now();
   const diffMs = Math.max(0, now - then);
   const diffSec = Math.floor(diffMs / 1000);
@@ -497,6 +509,17 @@ async function reprocessCaseAI(caseId: string): Promise<CaseAIStatusResponse> {
     return await parseJsonOrThrow<CaseAIStatusResponse>(res);
   } catch (error) {
     throw mapNetworkError(error, "Não foi possível reprocessar este caso agora.");
+  }
+}
+
+async function deleteCase(caseId: string): Promise<void> {
+  const res = await fetch(`/api/cases/${caseId}`, {
+    method: "DELETE",
+    credentials: "include",
+  });
+  if (!res.ok) {
+    const msg = await parseApiErrorResponse(res).catch(() => "Não foi possível excluir este upload.");
+    throw mapNetworkError(new Error(msg), msg);
   }
 }
 
@@ -737,6 +760,7 @@ export default function Dashboard() {
   const casePollingBoostTimeoutRef = useRef<number | null>(null);
   const casesLifecycleSignatureRef = useRef<string>("");
   const [isCasePollingBoosted, setIsCasePollingBoosted] = useState(false);
+  const [lastSyncAt, setLastSyncAt] = useState<string | null>(null);
 
   const activateCasePollingBoost = useCallback((durationMs = 2 * 60 * 1000) => {
     if (casePollingBoostTimeoutRef.current) {
@@ -934,6 +958,20 @@ export default function Dashboard() {
         title: "Falha ao reprocessar",
         description: error.message,
       });
+    },
+  });
+
+  const deleteCaseMutation = useMutation({
+    mutationFn: (caseId: string) => deleteCase(caseId),
+    onSuccess: (caseId) => {
+      queryClient.invalidateQueries({ queryKey: ["upload-history"] });
+      queryClient.invalidateQueries({ queryKey: ["user-cases"] });
+      queryClient.invalidateQueries({ queryKey: ["dashboard-data"] });
+      if (selectedHistoryCase?.case_id === caseId) setSelectedHistoryCase(null);
+      toast({ title: "Upload excluído", description: "O documento e todos os dados relacionados foram removidos." });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Falha ao excluir", description: error.message });
     },
   });
 
@@ -1148,6 +1186,7 @@ export default function Dashboard() {
       }
     },
     onSuccess: () => {
+      setLastSyncAt(new Date().toISOString());
       toast({
         title: "Bases públicas sincronizadas",
         description: "Dados públicos atualizados no banco com sucesso.",
@@ -1184,6 +1223,37 @@ export default function Dashboard() {
     return caseDashboardContextQuery.data ?? null;
   }, [appliedFilters, caseDashboardContextQuery.data, isDemoMode, selectedHistoryCase]);
   const dashboardData = useMemo(() => baseDashboardData, [baseDashboardData]);
+
+  const lastUpdatedAt = useMemo(() => {
+    const dates: number[] = [];
+    if (lastSyncAt) {
+      const t = new Date(lastSyncAt).getTime();
+      if (Number.isFinite(t)) dates.push(t);
+    }
+    for (const item of uploadHistoryItems) {
+      if (item.created_at) {
+        const t = new Date(item.created_at).getTime();
+        if (Number.isFinite(t)) dates.push(t);
+      }
+      if (item.ai_processed_at) {
+        const t = new Date(item.ai_processed_at).getTime();
+        if (Number.isFinite(t)) dates.push(t);
+      }
+    }
+    for (const item of userCases) {
+      if (item.created_at) {
+        const t = new Date(item.created_at).getTime();
+        if (Number.isFinite(t)) dates.push(t);
+      }
+      if (item.ai_processed_at) {
+        const t = new Date(item.ai_processed_at).getTime();
+        if (Number.isFinite(t)) dates.push(t);
+      }
+    }
+    if (dates.length === 0) return undefined;
+    return new Date(Math.max(...dates)).toISOString();
+  }, [lastSyncAt, uploadHistoryItems, userCases]);
+
   const inboxAlertDetails = useMemo<DashboardAlertItem[]>(() => {
     if (isDemoMode || strategicAlertItems.length === 0) {
       return (dashboardData?.alertas.details as DashboardAlertItem[] | undefined) ?? [];
@@ -1290,9 +1360,16 @@ export default function Dashboard() {
 
   const [, setUpdatedLabelTick] = useState(0);
   useEffect(() => {
-    const id = setInterval(() => setUpdatedLabelTick((t) => t + 1), 60_000);
+    const id = setInterval(() => {
+      setUpdatedLabelTick((t) => t + 1);
+      if (!isDemoMode) {
+        queryClient.invalidateQueries({ queryKey: ["dashboard-data"] });
+        queryClient.invalidateQueries({ queryKey: ["upload-history"] });
+        queryClient.invalidateQueries({ queryKey: ["user-cases"] });
+      }
+    }, 60_000);
     return () => clearInterval(id);
-  }, []);
+  }, [isDemoMode, queryClient]);
 
   useEffect(() => {
     if (isDemoMode || !meQuery.isSuccess || hasTriggeredInitialStrategicScan.current) {
@@ -1551,6 +1628,17 @@ export default function Dashboard() {
   };
 
   const handlePrimaryAlertAction = (item: DashboardAlertItem) => {
+    // Na aba Alertas, "Ver Detalhes" deve abrir o detalhe do alerta, não redirecionar para outra aba
+    if (activeTab === "alertas") {
+      openCardDetail({
+        title: item.title,
+        description: item.time,
+        lines: [item.desc],
+        targetTab: "alertas",
+      });
+      return;
+    }
+
     const target = item.action_target;
     const parsedModule = parseModuleParam(target?.module ?? null);
     const normalizedType = item.type.toLowerCase();
@@ -1739,7 +1827,7 @@ export default function Dashboard() {
               <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
               <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
             </span>
-            <span className="whitespace-nowrap">{formatUpdatedLabel(dashboardData?.generated_at)}</span>
+            <span className="whitespace-nowrap">{formatUpdatedLabel(lastUpdatedAt)}</span>
           </div>
         </section>
         {isDemoMode ? (
@@ -1748,7 +1836,7 @@ export default function Dashboard() {
               Dashboard de demonstração com dados fictícios. Recursos de upload e integrações externas estão disponíveis apenas para contas autenticadas.
             </p>
           </section>
-        ) : (
+        ) : activeTab === "visao-geral" ? (
           <section className={`${PANEL_CLASS} mb-6 p-4`}>
             <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
               <h3 className="flex items-center gap-2 font-bold text-slate-100">
@@ -1834,7 +1922,7 @@ export default function Dashboard() {
                     </div>
                   ) : (
                     <div className="space-y-2">
-                      {userCases.slice(0, 8).map((item) => {
+                      {userCases.slice(0, 3).map((item) => {
                         const statusMeta = getCaseAIStatusMeta(item.ai_status);
                         const createdAtLabel = formatDateTimeLabel(item.created_at);
                         const processedAtLabel = formatDateTimeLabel(item.ai_processed_at);
@@ -1897,6 +1985,17 @@ export default function Dashboard() {
                           </div>
                         );
                       })}
+                      <div className="pt-2">
+                        <Button
+                          type="button"
+                          variant="outline"
+                          className="h-8 gap-2 border-cyan-500/40 bg-transparent text-cyan-300 hover:bg-cyan-500/15 dark:text-cyan-200 dark:hover:bg-cyan-500/20"
+                          onClick={() => setActiveTab("historico-uploads")}
+                        >
+                          <History size={14} />
+                          Ver Todos
+                        </Button>
+                      </div>
                     </div>
                   )}
                 </div>
@@ -1910,7 +2009,7 @@ export default function Dashboard() {
               </div>
             )}
           </section>
-        )}
+        ) : null}
 
         <div className={`${PANEL_SOFT_CLASS} mb-8 grid gap-4 p-4 md:grid-cols-2 xl:grid-cols-6 xl:items-end`}>
           <FilterSelect
@@ -2124,6 +2223,8 @@ export default function Dashboard() {
                 onReprocessCase={(caseId: string) => reprocessCaseMutation.mutate(caseId)}
                 isReprocessingCaseId={reprocessCaseMutation.isPending ? reprocessCaseMutation.variables : null}
                 onOpenCompleteAnalysis={(item) => setSelectedHistoryCase(item)}
+                onDeleteCase={(caseId) => deleteCaseMutation.mutate(caseId)}
+                isDeletingCaseId={deleteCaseMutation.isPending ? deleteCaseMutation.variables : null}
                 onOpenRescisoriaCase={(caseId) => {
                   setActiveTab("inteligencia");
                   setStrategicModule("acoes-rescisorias");
@@ -2861,6 +2962,8 @@ function UploadHistoryView({
   onReprocessCase,
   isReprocessingCaseId,
   onOpenCompleteAnalysis,
+  onDeleteCase,
+  isDeletingCaseId,
   onOpenRescisoriaCase,
 }: {
   items: UploadHistoryItem[];
@@ -2870,10 +2973,18 @@ function UploadHistoryView({
   onReprocessCase: (caseId: string) => void;
   isReprocessingCaseId: string | null;
   onOpenCompleteAnalysis: (item: UploadHistoryItem) => void;
+  onDeleteCase: (caseId: string) => void;
+  isDeletingCaseId: string | null;
   onOpenRescisoriaCase: (caseId: string) => void;
 }) {
   const [searchTerm, setSearchTerm] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | "in_flight" | "completed" | "failed">("all");
+  const [expandedCaseIds, setExpandedCaseIds] = useState<string[]>([]);
+  const [caseToDelete, setCaseToDelete] = useState<UploadHistoryItem | null>(null);
+
+  const toggleExpanded = (caseId: string) => {
+    setExpandedCaseIds((prev) => (prev.includes(caseId) ? prev.filter((id) => id !== caseId) : [...prev, caseId]));
+  };
 
   const summary = useMemo(() => {
     const completed = items.filter((item) => item.ai_status === "completed").length;
@@ -3026,14 +3137,16 @@ function UploadHistoryView({
             const rescisoria = item.generated_data?.rescisoria;
             const isRescisoriaCandidate = typeof rescisoria?.viability_score === "number" && rescisoria.viability_score >= 70;
 
+            const isExpanded = expandedCaseIds.includes(item.case_id);
+            const isDeletingThis = isDeletingCaseId === item.case_id;
+
             return (
               <article
                 key={item.case_id}
-                className={`${PANEL_SOFT_CLASS} cursor-pointer p-5 transition-colors hover:border-cyan-500/40`}
-                onClick={() => onOpenCompleteAnalysis(item)}
+                className={`${PANEL_SOFT_CLASS} p-5 transition-colors`}
               >
                 <div className="flex flex-wrap items-start justify-between gap-3">
-                  <div>
+                  <div className="min-w-0 flex-1">
                     <p className="text-base font-bold text-slate-900 dark:text-slate-100">{item.filename || "Arquivo não identificado"}</p>
                     <p className="text-[12px] text-slate-300">
                       Processo: {item.process_number || `Caso ${item.case_id.slice(0, 8)}`}
@@ -3041,7 +3154,7 @@ function UploadHistoryView({
                       {processedAtLabel ? ` • Último processamento: ${processedAtLabel}` : ""}
                     </p>
                   </div>
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 shrink-0">
                     <span className={`inline-flex rounded-full border px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider ${statusMeta.badge}`}>
                       {statusMeta.label}
                     </span>
@@ -3056,14 +3169,23 @@ function UploadHistoryView({
                         variant="outline"
                         className="h-7 border-slate-300 bg-white px-3 text-[11px] font-bold text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-900/60 dark:text-slate-100 dark:hover:bg-slate-800"
                         disabled={isReprocessingThisCase}
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          onReprocessCase(item.case_id);
-                        }}
+                        onClick={(e) => { e.stopPropagation(); onReprocessCase(item.case_id); }}
                       >
                         {isReprocessingThisCase ? "Reprocessando..." : "Reprocessar AI"}
                       </Button>
                     ) : null}
+                    <button
+                      type="button"
+                      aria-label="Excluir upload"
+                      className="rounded-md p-1.5 text-red-400 hover:bg-red-500/15 hover:text-red-300 transition-colors disabled:opacity-50"
+                      disabled={isDeletingThis}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setCaseToDelete(item);
+                      }}
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </button>
                   </div>
                 </div>
 
@@ -3084,106 +3206,143 @@ function UploadHistoryView({
                 ) : null}
                 {item.ai_last_error ? <p className="mt-1 text-[11px] text-red-700 dark:text-red-200">Último erro: {item.ai_last_error}</p> : null}
 
-                <div className="mt-4 rounded-lg border border-cyan-200 bg-cyan-50/70 p-3 dark:border-cyan-500/25 dark:bg-cyan-500/10">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <p className="text-[11px] font-bold uppercase tracking-wide text-cyan-800 dark:text-cyan-200">Dados usados na análise deste documento</p>
-                    <span className="rounded-full border border-cyan-300 bg-white px-2 py-0.5 text-[10px] font-bold text-cyan-700 dark:border-cyan-400/40 dark:bg-cyan-500/15 dark:text-cyan-200">
-                      {populatedAnalyzedFields}/{analyzedInputFields.length} campos preenchidos
-                    </span>
-                  </div>
-                  <p className="mt-2 text-xs text-slate-700 dark:text-slate-300">
-                    A IA gerou os resultados com base nestes dados deste upload específico.
-                  </p>
-                  <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
-                    {analyzedInputFields.map((field) => (
-                      <div key={field.label} className="rounded-md border border-cyan-200/80 bg-white/85 p-2 dark:border-cyan-500/20 dark:bg-slate-900/40">
-                        <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-600 dark:text-slate-400">{field.label}</p>
-                        <p className="mt-1 break-all text-xs font-medium text-slate-800 dark:text-slate-200">{field.value}</p>
-                      </div>
-                    ))}
-                  </div>
-                  <div className="mt-3 flex flex-wrap gap-2 text-[11px]">
-                    <span className="rounded-md border border-cyan-300 bg-white px-2 py-0.5 text-cyan-700 dark:border-cyan-500/30 dark:bg-slate-900/30 dark:text-cyan-200">
-                      Fatos-chave identificados: {keyFacts.length}
-                    </span>
-                    <span className="rounded-md border border-cyan-300 bg-white px-2 py-0.5 text-cyan-700 dark:border-cyan-500/30 dark:bg-slate-900/30 dark:text-cyan-200">
-                      Prazos identificados: {deadlines.length}
-                    </span>
-                    <span className="rounded-md border border-cyan-300 bg-white px-2 py-0.5 text-cyan-700 dark:border-cyan-500/30 dark:bg-slate-900/30 dark:text-cyan-200">
-                      Métricas calculadas: {aiMetricsCount}
-                    </span>
-                  </div>
-                </div>
-
-                <div className="mt-4 grid md:grid-cols-2 gap-4">
-                  <div className="rounded-lg border border-slate-200 bg-white p-3 dark:border-slate-800 dark:bg-slate-900/45">
-                    <p className="text-[11px] font-bold uppercase tracking-wide text-slate-600 dark:text-slate-400">Resultado da extração automática</p>
-                    <div className="mt-2 space-y-1.5 text-sm text-slate-800 dark:text-slate-200">
-                      <p>Título: {extracted.title || item.case_title || "--"}</p>
-                      <p>Número: {extracted.process_number || item.process_number || "--"}</p>
-                      <p>Status: {extracted.status || item.status || "--"}</p>
-                      {keyFacts.length > 0 ? <p>Fatos-chave: {keyFacts.join(" • ")}</p> : null}
-                      {deadlines.length > 0 ? (
-                        <p>
-                          Prazos:{" "}
-                          {deadlines
-                            .map((deadline) => `${deadline.label}${deadline.due_date ? ` (${formatDateTimeLabel(deadline.due_date) || deadline.due_date})` : ""}`)
-                            .join(" • ")}
-                        </p>
-                      ) : null}
-                    </div>
-                  </div>
-
-                  <div className="rounded-lg border border-slate-200 bg-white p-3 dark:border-slate-800 dark:bg-slate-900/45">
-                    <p className="text-[11px] font-bold uppercase tracking-wide text-slate-600 dark:text-slate-400">Resultado da análise da IA</p>
-                    <div className="mt-2 space-y-1.5 text-sm text-slate-800 dark:text-slate-200">
-                      <p>Êxito: {formatProbabilityPercent(item.generated_data?.success_probability)}</p>
-                      <p>Acordo: {formatProbabilityPercent(item.generated_data?.settlement_probability)}</p>
-                      <p>Risco: {typeof item.generated_data?.risk_score === "number" ? `${Math.round(item.generated_data.risk_score)} / 100` : "--"}</p>
-                      <p>Complexidade: {typeof item.generated_data?.complexity_score === "number" ? `${Math.round(item.generated_data.complexity_score)} / 100` : "--"}</p>
-                      <p>Tempo estimado: {typeof item.generated_data?.expected_decision_months === "number" ? `${item.generated_data.expected_decision_months.toFixed(1)} meses` : "--"}</p>
-                    </div>
-                  </div>
-                </div>
-
-                {item.generated_data?.ai_summary ? (
-                  <div className="mt-4 rounded-lg border border-cyan-300 bg-cyan-50 p-3 dark:border-cyan-500/20 dark:bg-cyan-500/10">
-                    <p className="text-[11px] font-bold uppercase tracking-wide text-cyan-800 dark:text-cyan-200">Conclusão da IA para este documento</p>
-                    <p className="mt-1 text-sm text-slate-800 leading-relaxed dark:text-slate-200">{item.generated_data.ai_summary}</p>
-                  </div>
-                ) : null}
-
-                <div className="mt-4 flex justify-end">
-                  {isRescisoriaCandidate ? (
-                    <Button
-                      type="button"
-                      variant="outline"
-                      className="mr-2 h-8 border-emerald-300 bg-emerald-50 px-3 text-[11px] font-bold text-emerald-800 hover:bg-emerald-100 dark:border-emerald-500/40 dark:bg-emerald-500/10 dark:text-emerald-100 dark:hover:bg-emerald-500/20"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        onOpenRescisoriaCase(item.case_id);
-                      }}
-                    >
-                      Abrir Ações Rescisórias deste caso
-                    </Button>
-                  ) : null}
+                <div className="mt-3">
                   <Button
                     type="button"
-                    variant="outline"
-                    className="h-8 border-cyan-300 bg-cyan-50 px-3 text-[11px] font-bold text-cyan-800 hover:bg-cyan-100 dark:border-cyan-500/40 dark:bg-cyan-500/10 dark:text-cyan-100 dark:hover:bg-cyan-500/20"
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      onOpenCompleteAnalysis(item);
-                    }}
+                    variant="ghost"
+                    size="sm"
+                    className="h-8 gap-1.5 text-cyan-600 hover:text-cyan-400 hover:bg-cyan-500/10 dark:text-cyan-400 dark:hover:text-cyan-300"
+                    onClick={() => toggleExpanded(item.case_id)}
                   >
-                    Abrir visão completa deste upload
+                    {isExpanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+                    {isExpanded ? "Ver menos" : "Ver mais detalhes"}
                   </Button>
                 </div>
+
+                {isExpanded ? (
+                  <>
+                    <div className="mt-4 rounded-lg border border-cyan-200 bg-cyan-50/70 p-3 dark:border-cyan-500/25 dark:bg-cyan-500/10">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <p className="text-[11px] font-bold uppercase tracking-wide text-cyan-800 dark:text-cyan-200">Dados usados na análise deste documento</p>
+                        <span className="rounded-full border border-cyan-300 bg-white px-2 py-0.5 text-[10px] font-bold text-cyan-700 dark:border-cyan-400/40 dark:bg-cyan-500/15 dark:text-cyan-200">
+                          {populatedAnalyzedFields}/{analyzedInputFields.length} campos preenchidos
+                        </span>
+                      </div>
+                      <p className="mt-2 text-xs text-slate-700 dark:text-slate-300">
+                        A IA gerou os resultados com base nestes dados deste upload específico.
+                      </p>
+                      <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+                        {analyzedInputFields.map((field) => (
+                          <div key={field.label} className="rounded-md border border-cyan-200/80 bg-white/85 p-2 dark:border-cyan-500/20 dark:bg-slate-900/40">
+                            <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-600 dark:text-slate-400">{field.label}</p>
+                            <p className="mt-1 break-all text-xs font-medium text-slate-800 dark:text-slate-200">{field.value}</p>
+                          </div>
+                        ))}
+                      </div>
+                      <div className="mt-3 flex flex-wrap gap-2 text-[11px]">
+                        <span className="rounded-md border border-cyan-300 bg-white px-2 py-0.5 text-cyan-700 dark:border-cyan-500/30 dark:bg-slate-900/30 dark:text-cyan-200">
+                          Fatos-chave identificados: {keyFacts.length}
+                        </span>
+                        <span className="rounded-md border border-cyan-300 bg-white px-2 py-0.5 text-cyan-700 dark:border-cyan-500/30 dark:bg-slate-900/30 dark:text-cyan-200">
+                          Prazos identificados: {deadlines.length}
+                        </span>
+                        <span className="rounded-md border border-cyan-300 bg-white px-2 py-0.5 text-cyan-700 dark:border-cyan-500/30 dark:bg-slate-900/30 dark:text-cyan-200">
+                          Métricas calculadas: {aiMetricsCount}
+                        </span>
+                      </div>
+                    </div>
+
+                    <div className="mt-4 grid md:grid-cols-2 gap-4">
+                      <div className="rounded-lg border border-slate-200 bg-white p-3 dark:border-slate-800 dark:bg-slate-900/45">
+                        <p className="text-[11px] font-bold uppercase tracking-wide text-slate-600 dark:text-slate-400">Resultado da extração automática</p>
+                        <div className="mt-2 space-y-1.5 text-sm text-slate-800 dark:text-slate-200">
+                          <p>Título: {extracted.title || item.case_title || "--"}</p>
+                          <p>Número: {extracted.process_number || item.process_number || "--"}</p>
+                          <p>Status: {extracted.status || item.status || "--"}</p>
+                          {keyFacts.length > 0 ? <p>Fatos-chave: {keyFacts.join(" • ")}</p> : null}
+                          {deadlines.length > 0 ? (
+                            <p>
+                              Prazos:{" "}
+                              {deadlines
+                                .map((deadline) => `${deadline.label}${deadline.due_date ? ` (${formatDateTimeLabel(deadline.due_date) || deadline.due_date})` : ""}`)
+                                .join(" • ")}
+                            </p>
+                          ) : null}
+                        </div>
+                      </div>
+
+                      <div className="rounded-lg border border-slate-200 bg-white p-3 dark:border-slate-800 dark:bg-slate-900/45">
+                        <p className="text-[11px] font-bold uppercase tracking-wide text-slate-600 dark:text-slate-400">Resultado da análise da IA</p>
+                        <div className="mt-2 space-y-1.5 text-sm text-slate-800 dark:text-slate-200">
+                          <p>Êxito: {formatProbabilityPercent(item.generated_data?.success_probability)}</p>
+                          <p>Acordo: {formatProbabilityPercent(item.generated_data?.settlement_probability)}</p>
+                          <p>Risco: {typeof item.generated_data?.risk_score === "number" ? `${Math.round(item.generated_data.risk_score)} / 100` : "--"}</p>
+                          <p>Complexidade: {typeof item.generated_data?.complexity_score === "number" ? `${Math.round(item.generated_data.complexity_score)} / 100` : "--"}</p>
+                          <p>Tempo estimado: {typeof item.generated_data?.expected_decision_months === "number" ? `${item.generated_data.expected_decision_months.toFixed(1)} meses` : "--"}</p>
+                        </div>
+                      </div>
+                    </div>
+
+                    {item.generated_data?.ai_summary ? (
+                      <div className="mt-4 rounded-lg border border-cyan-300 bg-cyan-50 p-3 dark:border-cyan-500/20 dark:bg-cyan-500/10">
+                        <p className="text-[11px] font-bold uppercase tracking-wide text-cyan-800 dark:text-cyan-200">Conclusão da IA para este documento</p>
+                        <p className="mt-1 text-sm text-slate-800 leading-relaxed dark:text-slate-200">{item.generated_data.ai_summary}</p>
+                      </div>
+                    ) : null}
+
+                    <div className="mt-4 flex justify-end">
+                      {isRescisoriaCandidate ? (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          className="mr-2 h-8 border-emerald-300 bg-emerald-50 px-3 text-[11px] font-bold text-emerald-800 hover:bg-emerald-100 dark:border-emerald-500/40 dark:bg-emerald-500/10 dark:text-emerald-100 dark:hover:bg-emerald-500/20"
+                          onClick={(e) => { e.stopPropagation(); onOpenRescisoriaCase(item.case_id); }}
+                        >
+                          Abrir Ações Rescisórias deste caso
+                        </Button>
+                      ) : null}
+                      <Button
+                        type="button"
+                        variant="outline"
+                        className="h-8 border-cyan-300 bg-cyan-50 px-3 text-[11px] font-bold text-cyan-800 hover:bg-cyan-100 dark:border-cyan-500/40 dark:bg-cyan-500/10 dark:text-cyan-100 dark:hover:bg-cyan-500/20"
+                        onClick={(e) => { e.stopPropagation(); onOpenCompleteAnalysis(item); }}
+                      >
+                        Abrir visão completa deste upload
+                      </Button>
+                    </div>
+                  </>
+                ) : null}
               </article>
             );
           })}
         </div>
       )}
+
+      <AlertDialog open={caseToDelete !== null} onOpenChange={(open) => !open && setCaseToDelete(null)}>
+        <AlertDialogContent className="border-slate-200 bg-slate-50 text-slate-900 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Excluir upload?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Esta ação irá remover permanentemente este documento e todos os dados relacionados (análises, métricas, prazos). Não é possível desfazer.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel className="dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100" disabled={!!isDeletingCaseId}>Cancelar</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-red-600 text-white hover:bg-red-700 focus:ring-red-600 dark:bg-red-700 dark:hover:bg-red-800 disabled:opacity-70"
+              disabled={!!isDeletingCaseId}
+              onClick={() => {
+                if (caseToDelete) {
+                  onDeleteCase(caseToDelete.case_id);
+                  setCaseToDelete(null);
+                }
+              }}
+            >
+              {isDeletingCaseId ? "Excluindo…" : "Excluir"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
