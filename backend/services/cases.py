@@ -202,8 +202,15 @@ def _looks_like_person_name(candidate: str) -> bool:
     return len(meaningful) >= 2
 
 
+# Zonas onde o nome do juiz costuma aparecer (evita varrer o documento inteiro em arquivos grandes).
+_JUDGE_HEAD_CHARS = 22_000   # início: capa, cabeçalho, decisão
+_JUDGE_TAIL_CHARS = 14_000   # final: assinaturas, "À disposição", "Assinado por"
+
+
 def _extract_judge_name(text: str) -> Optional[str]:
-    head = "\n".join(text.splitlines()[:280])
+    if not text or not text.strip():
+        return None
+
     patterns = [
         r"(?:Ju[ií]z(?:a)?(?:\s+Federal)?(?:\s+Convocado)?|Magistrad[oa]|Relator(?:a)?|Desembargador(?:a)?(?:\s+Federal)?|Ministro(?:a)?)\s*[:\-]\s*([A-ZÀ-Ý][A-Za-zÀ-ÿ'.-]*(?:\s+(?:[A-ZÀ-Ý][A-Za-zÀ-ÿ'.-]*|de|da|do|dos|das|e)){1,8})",
         r"Assinado\s+por\s*[:\-]\s*([A-ZÀ-Ý][A-Za-zÀ-ÿ'.-]*(?:\s+(?:[A-ZÀ-Ý][A-Za-zÀ-ÿ'.-]*|de|da|do|dos|das|e)){1,8})",
@@ -212,11 +219,26 @@ def _extract_judge_name(text: str) -> Optional[str]:
         r"(?:Dr\.?|Dra\.?)\s+([A-ZÀ-Ý][A-Za-zÀ-ÿ'.-]*(?:\s+(?:[A-ZÀ-Ý][A-Za-zÀ-ÿ'.-]*|de|da|do|dos|das|e)){1,6})\s*(?:\n|,|\s+Juiz|\s+Ju[ií]za)",
         r"Juiz\s+(?:da|de)\s+\d+[ªa]?\s+Vara\s+Federal[^.]*?[:\-]\s*([A-ZÀ-Ý][A-Za-zÀ-ÿ'.-]*(?:\s+(?:[A-ZÀ-Ý][A-Za-zÀ-ÿ'.-]*|de|da|do|dos|das|e)){1,8})",
     ]
-    for pattern in patterns:
-        for found in re.finditer(pattern, head, flags=re.IGNORECASE | re.MULTILINE):
-            candidate = re.sub(r"\s+", " ", found.group(1)).strip(" .,:;-")
-            if _looks_like_person_name(candidate):
-                return candidate[:140]
+
+    def search_in(zone: str) -> Optional[str]:
+        for pattern in patterns:
+            for found in re.finditer(pattern, zone, flags=re.IGNORECASE | re.MULTILINE):
+                candidate = re.sub(r"\s+", " ", found.group(1)).strip(" .,:;-")
+                if _looks_like_person_name(candidate):
+                    return candidate[:140]
+        return None
+
+    head = text[:_JUDGE_HEAD_CHARS]
+    result = search_in(head)
+    if result:
+        return result
+
+    if len(text) > _JUDGE_TAIL_CHARS:
+        tail = text[-_JUDGE_TAIL_CHARS:]
+        result = search_in(tail)
+        if result:
+            return result
+
     return None
 
 
@@ -282,7 +304,7 @@ def fallback_extract_case_data(
         tribunal_match = _search_first(search_window, [r"\bTJ[A-Z]{2}\b", r"\bTRT-?\d+\b", r"\bTRF-?\d+\b"])
     tribunal_match = _normalize_tribunal_label(tribunal_match)
 
-    judge_match = judge or _extract_judge_name(search_window)
+    judge_match = judge or _extract_judge_name(text)
     action_type_final = action_type or _guess_action_type(search_window, process_number_final)
 
     claim_value_final = claim_value
