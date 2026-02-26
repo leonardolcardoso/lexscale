@@ -413,6 +413,22 @@ function buildDashboardUrl(filters: DashboardFilters) {
   return `/api/dashboard?${params.toString()}`;
 }
 
+function formatUpdatedLabel(generatedAt: string | undefined): string {
+  if (!generatedAt) return "Atualizando...";
+  const then = new Date(generatedAt).getTime();
+  if (Number.isNaN(then)) return "Atualizando...";
+  const now = Date.now();
+  const diffMs = Math.max(0, now - then);
+  const diffSec = Math.floor(diffMs / 1000);
+  const diffMin = Math.floor(diffSec / 60);
+  const diffH = Math.floor(diffMin / 60);
+  if (diffSec < 60) return "Atualizado: agora";
+  if (diffMin < 60) return `Atualizado: há ${diffMin} min`;
+  if (diffH < 24) return `Atualizado: há ${diffH} h`;
+  const diffDays = Math.floor(diffH / 24);
+  return `Atualizado: há ${diffDays} dia(s)`;
+}
+
 async function parseJsonOrThrow<T>(res: Response): Promise<T> {
   if (!res.ok) {
     throw await parseApiErrorResponse(res);
@@ -602,7 +618,7 @@ function estimateCaseAIProgressFallback(caseItem: { ai_attempts?: number | null;
 
 function resolveCaseAIProgress(caseItem: { ai_status: CaseAIStatus; ai_attempts?: number | null; ai_progress_percent?: number | null }): number {
   const backendValue = caseItem.ai_progress_percent;
-  if (typeof backendValue === "number" && Number.isFinite(backendValue)) {
+  if (typeof backendValue === "number" && Number.isFinite(backendValue) && backendValue > 0) {
     return Math.max(0, Math.min(100, Math.round(backendValue)));
   }
   return estimateCaseAIProgressFallback(caseItem);
@@ -1234,6 +1250,20 @@ export default function Dashboard() {
     };
   }, [activeTab, isDemoMode, userCases]);
 
+  const prevInFlightCountRef = useRef<number | null>(null);
+  useEffect(() => {
+    const inFlight = processingProgress?.inFlightCount ?? 0;
+    const prev = prevInFlightCountRef.current;
+    prevInFlightCountRef.current = inFlight;
+    if (prev !== null && prev > 0 && inFlight === 0) {
+      toast({
+        title: "Upload concluído e processado pela IA com sucesso",
+        description: "O processo foi analisado e os indicadores estão disponíveis.",
+        variant: "success",
+      });
+    }
+  }, [processingProgress?.inFlightCount, toast]);
+
   const strategicModalData = useMemo(() => {
     const scores = dashboardData?.visao_geral.scores || [];
     const resolveScore = (title: string, fallback: number) => scores.find((item) => item.title.toLowerCase() === title)?.value ?? fallback;
@@ -1257,6 +1287,12 @@ export default function Dashboard() {
   useEffect(() => {
     setDismissedAlerts([]);
   }, [dashboardData?.generated_at]);
+
+  const [, setUpdatedLabelTick] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setUpdatedLabelTick((t) => t + 1), 60_000);
+    return () => clearInterval(id);
+  }, []);
 
   useEffect(() => {
     if (isDemoMode || !meQuery.isSuccess || hasTriggeredInitialStrategicScan.current) {
@@ -1653,19 +1689,6 @@ export default function Dashboard() {
           </div>
 
           <div className="flex flex-wrap items-center justify-center gap-2 sm:gap-3 lg:justify-self-end lg:justify-end">
-            <div className="hidden items-center gap-2 text-sm text-slate-300 xl:flex">
-              <span className="relative flex h-2 w-2">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
-              </span>
-              {dashboardData?.updated_label || "Atualizando..."}
-            </div>
-            {processingProgress ? (
-              <div className="hidden items-center gap-2 rounded-full border border-cyan-400/30 bg-cyan-500/10 px-3 py-1 text-xs font-bold text-cyan-200 xl:flex">
-                <ActivitySquare size={12} />
-                IA {processingProgress.percent}%
-              </div>
-            ) : null}
             {isDemoMode ? (
               <>
                 <span className="rounded-full border border-cyan-400/40 bg-cyan-500/15 px-3 py-1 text-[10px] font-bold uppercase tracking-[0.16em] text-cyan-200">
@@ -1711,23 +1734,13 @@ export default function Dashboard() {
       <main className={`flex-1 w-full max-w-[1400px] mx-auto p-4 sm:p-6 transition-opacity duration-300 ${isFiltering ? "opacity-50 pointer-events-none" : "opacity-100"}`}>
         <section className={`${PANEL_SOFT_CLASS} mb-4 flex flex-wrap items-center justify-between gap-3 p-3`}>
           <p className="text-xs font-semibold uppercase tracking-wide text-slate-300">{breadcrumbLabel}</p>
-          {navigationOrigin &&
-          !((navigationOrigin === "alerta" && activeTab === "alertas") || (navigationOrigin === "historico" && activeTab === "historico-uploads")) ? (
-            <Button
-              size="sm"
-              variant="outline"
-              className="h-8 border-slate-700 bg-slate-900/40 text-slate-200 hover:bg-slate-800"
-              onClick={() => {
-                if (navigationOrigin === "alerta") {
-                  setActiveTab("alertas");
-                } else if (navigationOrigin === "historico") {
-                  setActiveTab("historico-uploads");
-                }
-              }}
-            >
-              Voltar para {navigationOrigin === "alerta" ? "Alertas" : "Histórico"}
-            </Button>
-          ) : null}
+          <div className="flex items-center gap-2 text-xs sm:text-sm text-slate-300">
+            <span className="relative flex h-2 w-2">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
+              <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
+            </span>
+            <span className="whitespace-nowrap">{formatUpdatedLabel(dashboardData?.generated_at)}</span>
+          </div>
         </section>
         {isDemoMode ? (
           <section className={`${PANEL_SOFT_CLASS} p-4 mb-6`}>
@@ -1935,13 +1948,13 @@ export default function Dashboard() {
           </Button>
         </div>
 
-        {processingProgress ? (
+        {processingProgress && processingProgress.inFlightCount > 0 ? (
           <ProcessingProgressBanner
             percent={processingProgress.percent}
             title={processingProgress.title}
             detail={processingProgress.detail}
             tone={processingProgress.tone}
-            isInFlight={processingProgress.inFlightCount > 0}
+            isInFlight={true}
           />
         ) : null}
 
