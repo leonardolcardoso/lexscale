@@ -30,7 +30,7 @@ import { ResponsiveContainer, RadarChart, PolarGrid, PolarAngleAxis, Radar, BarC
 import { useToast } from "@/hooks/use-toast";
 import { buildInitials, fetchMe, isUnauthorizedError, logout } from "@/lib/auth";
 import { mapNetworkError, parseApiErrorResponse } from "@/lib/http-errors";
-import { buildMockDashboardData, buildMockUploadHistory } from "@/lib/mock-dashboard";
+import { buildMockDashboardContextForUpload, buildMockDashboardData, buildMockUploadHistory } from "@/lib/mock-dashboard";
 import type {
   CaseAIStatus,
   CaseAIStatusResponse,
@@ -1113,6 +1113,13 @@ export default function Dashboard() {
     () => (isDemoMode ? buildMockUploadHistory(appliedFilters) : uploadHistoryQuery.data ?? []),
     [appliedFilters, isDemoMode, uploadHistoryQuery.data],
   );
+  const selectedHistoryContextData = useMemo(() => {
+    if (!selectedHistoryCase) return null;
+    if (isDemoMode) {
+      return buildMockDashboardContextForUpload(selectedHistoryCase, appliedFilters);
+    }
+    return caseDashboardContextQuery.data ?? null;
+  }, [appliedFilters, caseDashboardContextQuery.data, isDemoMode, selectedHistoryCase]);
   const dashboardData = useMemo(() => baseDashboardData, [baseDashboardData]);
   const processingProgress = useMemo(() => {
     if (isDemoMode || userCases.length === 0) {
@@ -1838,8 +1845,8 @@ export default function Dashboard() {
             {activeTab === "historico-uploads" && (
               <UploadHistoryView
                 items={uploadHistoryItems}
-                isLoading={uploadHistoryQuery.isLoading}
-                isError={uploadHistoryQuery.isError}
+                isLoading={!isDemoMode && uploadHistoryQuery.isLoading}
+                isError={!isDemoMode && uploadHistoryQuery.isError}
                 errorMessage={uploadHistoryQuery.error instanceof Error ? uploadHistoryQuery.error.message : "erro desconhecido"}
                 onReprocessCase={(caseId: string) => reprocessCaseMutation.mutate(caseId)}
                 isReprocessingCaseId={reprocessCaseMutation.isPending ? reprocessCaseMutation.variables : null}
@@ -1977,15 +1984,15 @@ export default function Dashboard() {
             </DialogDescription>
           </DialogHeader>
 
-          {caseDashboardContextQuery.isLoading ? (
+          {!isDemoMode && caseDashboardContextQuery.isLoading ? (
             <div className="py-10 text-center text-sm text-slate-600 dark:text-slate-300">Carregando comparativos deste upload...</div>
-          ) : caseDashboardContextQuery.isError ? (
+          ) : !isDemoMode && caseDashboardContextQuery.isError ? (
             <div className="mt-4 rounded-xl border border-red-500/30 bg-red-950/30 p-4 text-sm text-red-200">
               Falha ao carregar visão completa: {caseDashboardContextQuery.error instanceof Error ? caseDashboardContextQuery.error.message : "erro desconhecido"}
             </div>
-          ) : caseDashboardContextQuery.data ? (
+          ) : selectedHistoryContextData ? (
             <UploadHistoryCompleteInsights
-              data={caseDashboardContextQuery.data}
+              data={selectedHistoryContextData}
               caseItem={selectedHistoryCase}
             />
           ) : (

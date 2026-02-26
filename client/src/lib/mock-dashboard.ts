@@ -719,3 +719,28 @@ export function buildMockUploadHistory(filters: DashboardFilters): UploadHistory
     };
   });
 }
+
+function resolveMockClaimRange(claimValue?: number | null): DashboardFilters["faixa_valor"] {
+  if (typeof claimValue !== "number" || !Number.isFinite(claimValue)) return "Todos os Valores";
+  if (claimValue <= 100000) return "0-100k";
+  if (claimValue <= 500000) return "100k-500k";
+  return ">500k";
+}
+
+export function buildMockDashboardContextForUpload(
+  uploadItem: UploadHistoryItem,
+  fallbackFilters: DashboardFilters,
+): DashboardData {
+  const tribunal = uploadItem.tribunal && TRIBUNAL_FACTORS[uploadItem.tribunal] ? uploadItem.tribunal : fallbackFilters.tribunal;
+  const juiz = uploadItem.judge && JUDGE_FACTORS[uploadItem.judge] ? uploadItem.judge : fallbackFilters.juiz;
+  const tipoAcao = uploadItem.action_type && ACTION_FACTORS[uploadItem.action_type] ? uploadItem.action_type : fallbackFilters.tipo_acao;
+  const faixaValor = resolveMockClaimRange(uploadItem.claim_value);
+
+  return buildMockDashboardData({
+    tribunal,
+    juiz,
+    tipo_acao: tipoAcao,
+    faixa_valor: faixaValor,
+    periodo: fallbackFilters.periodo,
+  });
+}
