@@ -4,6 +4,13 @@ from typing import List, Optional
 from pydantic import BaseModel, Field
 
 
+class AlertActionTarget(BaseModel):
+    tab: str
+    module: Optional[str] = None
+    case_id: Optional[str] = None
+    reason: Optional[str] = None
+
+
 class StrategicAlertItem(BaseModel):
     alert_id: str
     type: str
@@ -13,6 +20,7 @@ class StrategicAlertItem(BaseModel):
     source: str
     occurrence_count: int = Field(ge=1)
     contexts: List[str] = Field(default_factory=list)
+    action_target: Optional[AlertActionTarget] = None
     time: str
     created_at: datetime
     last_detected_at: datetime

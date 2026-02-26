@@ -98,6 +98,30 @@ Cada item:
 - `trend_color`
 - `unit` (opcional)
 
+### 3.4 Ações Rescisórias
+- `summary`
+- `kpis`
+- `candidates`
+
+Cada KPI:
+- `label`
+- `value`
+- `tone`
+
+Cada candidato:
+- `case_id`
+- `process_number`
+- `eligibility_status` (`eligible|uncertain|ineligible`)
+- `viability_score` (0-100)
+- `recommendation` (`recommend_filing|monitor|do_not_recommend`)
+- `grounds_detected`
+- `financial_projection`
+
+`financial_projection`:
+- `estimated_cost_brl`
+- `projected_upside_brl`
+- `projected_net_brl`
+
 ## 4) Simulações Avançadas
 
 ### 4.1 Bloco explicativo
@@ -139,6 +163,13 @@ Cada alerta:
 - `title`
 - `time`
 - `desc`
+- `action_target` (opcional)
+
+`action_target`:
+- `tab`
+- `module` (opcional)
+- `case_id` (opcional)
+- `reason` (opcional)
 
 ## 6) Endpoint Backend Consolidado
 

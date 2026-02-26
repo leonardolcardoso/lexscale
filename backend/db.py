@@ -74,6 +74,9 @@ def init_database() -> None:
                 text("ALTER TABLE IF EXISTS process_cases ADD COLUMN IF NOT EXISTS dashboard_snapshot JSON"),
             )
             connection.execute(
+                text("ALTER TABLE IF EXISTS process_cases ADD COLUMN IF NOT EXISTS rescisoria_snapshot JSON"),
+            )
+            connection.execute(
                 text("ALTER TABLE IF EXISTS process_cases ADD COLUMN IF NOT EXISTS ai_stage TEXT"),
             )
             connection.execute(
@@ -118,6 +121,9 @@ def init_database() -> None:
             )
             connection.execute(
                 text("CREATE INDEX IF NOT EXISTS ix_process_cases_ai_next_retry_at ON process_cases (ai_next_retry_at)"),
+            )
+            connection.execute(
+                text("ALTER TABLE IF EXISTS strategic_alerts ADD COLUMN IF NOT EXISTS action_target JSON"),
             )
             connection.execute(
                 text("ALTER TABLE IF EXISTS ai_messages ADD COLUMN IF NOT EXISTS user_id UUID"),

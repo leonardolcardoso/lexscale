@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 
 from backend.db import SessionLocal
 from backend.models import ProcessCase, StrategicAlert, User
-from backend.schemas.dashboard import AlertCountData, AlertasData, DetailedAlertData
+from backend.schemas.dashboard import ActionTargetData, AlertCountData, AlertasData, DetailedAlertData
 from backend.services.dashboard import build_dashboard_data
 
 ALERT_CATEGORY_ORDER: Dict[str, int] = {
@@ -119,6 +119,15 @@ def _safe_dt(value: Optional[datetime]) -> Optional[datetime]:
     if value.tzinfo is None:
         return value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc)
+
+
+def _safe_action_target(raw_value: object) -> Optional[ActionTargetData]:
+    if not isinstance(raw_value, dict):
+        return None
+    try:
+        return ActionTargetData.model_validate(raw_value)
+    except Exception:
+        return None
 
 
 def _format_relative(now: datetime, value: Optional[datetime]) -> str:
@@ -404,6 +413,7 @@ def build_dashboard_alerts_from_store(
             title=item.title,
             time=_format_relative(now, item.notified_at or item.last_detected_at or item.created_at),
             desc=item.description,
+            action_target=_safe_action_target(item.action_target),
         )
         for item in active_alerts
     ]

@@ -106,6 +106,7 @@ class ProcessCase(Base):
     extracted_fields = Column(JSON, nullable=True)
     ai_summary = Column(Text, nullable=True)
     dashboard_snapshot = Column(JSON, nullable=True)
+    rescisoria_snapshot = Column(JSON, nullable=True)
     success_probability = Column(Float, nullable=True)
     settlement_probability = Column(Float, nullable=True)
     expected_decision_months = Column(Float, nullable=True)
@@ -222,6 +223,7 @@ class StrategicAlert(Base):
     fingerprint = Column(String(64), nullable=False, index=True)
     status = Column(String(24), nullable=False, default="new", index=True)  # new|read|dismissed
     source = Column(String(64), nullable=False, default="dashboard_scan")
+    action_target = Column(JSON, nullable=True)
     occurrence_count = Column(Integer, nullable=False, default=1)
     contexts = Column(JSON, nullable=True)
     first_detected_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())

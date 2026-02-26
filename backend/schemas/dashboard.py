@@ -88,6 +88,13 @@ class ImpactMetricData(BaseModel):
     icon: str
 
 
+class ActionTargetData(BaseModel):
+    tab: str
+    module: Optional[str] = None
+    case_id: Optional[str] = None
+    reason: Optional[str] = None
+
+
 class AlertCountData(BaseModel):
     count: int = Field(ge=0)
     label: str
@@ -99,6 +106,35 @@ class DetailedAlertData(BaseModel):
     title: str
     time: str
     desc: str
+    action_target: Optional[ActionTargetData] = None
+
+
+class RescisoriaFinancialProjectionData(BaseModel):
+    estimated_cost_brl: float = 0.0
+    projected_upside_brl: float = 0.0
+    projected_net_brl: float = 0.0
+
+
+class RescisoriaCandidateData(BaseModel):
+    case_id: str
+    process_number: str
+    eligibility_status: str
+    viability_score: int = Field(ge=0, le=100)
+    recommendation: str
+    grounds_detected: List[str] = Field(default_factory=list)
+    financial_projection: RescisoriaFinancialProjectionData = Field(default_factory=RescisoriaFinancialProjectionData)
+
+
+class RescisoriaKPIData(BaseModel):
+    label: str
+    value: str
+    tone: str = "blue"
+
+
+class AcoesRescisoriasData(BaseModel):
+    summary: str = ""
+    kpis: List[RescisoriaKPIData] = Field(default_factory=list)
+    candidates: List[RescisoriaCandidateData] = Field(default_factory=list)
 
 
 class DashboardFiltersData(BaseModel):
@@ -123,6 +159,7 @@ class InteligenciaData(BaseModel):
     heatmap_columns: List[str]
     heatmap_rows: List[HeatmapRowData]
     benchmark: List[BenchmarkData]
+    acoes_rescisorias: AcoesRescisoriasData = Field(default_factory=AcoesRescisoriasData)
 
 
 class SimulacaoData(BaseModel):

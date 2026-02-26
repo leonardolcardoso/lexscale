@@ -45,6 +45,27 @@ export type DashboardData = {
     }>;
   };
   inteligencia: {
+    acoes_rescisorias: {
+      summary: string;
+      kpis: Array<{
+        label: string;
+        value: string;
+        tone: string;
+      }>;
+      candidates: Array<{
+        case_id: string;
+        process_number: string;
+        eligibility_status: string;
+        viability_score: number;
+        recommendation: string;
+        grounds_detected: string[];
+        financial_projection: {
+          estimated_cost_brl: number;
+          projected_upside_brl: number;
+          projected_net_brl: number;
+        };
+      }>;
+    };
     similar_processes: Array<{
       id: string;
       similarity: string;
@@ -100,8 +121,28 @@ export type DashboardData = {
       title: string;
       time: string;
       desc: string;
+      action_target?: {
+        tab: string;
+        module?: string | null;
+        case_id?: string | null;
+        reason?: string | null;
+      } | null;
     }>;
   };
+};
+
+export type RescisoriaAnalysis = {
+  eligibility_status: "eligible" | "uncertain" | "ineligible" | string;
+  viability_score: number;
+  recommendation: "recommend_filing" | "monitor" | "do_not_recommend" | string;
+  grounds_detected: string[];
+  financial_projection: {
+    estimated_cost_brl: number;
+    projected_upside_brl: number;
+    projected_net_brl: number;
+  };
+  transit_judged_detected?: boolean | null;
+  reason?: string | null;
 };
 
 export type UploadCaseResponse = {
@@ -164,6 +205,7 @@ export type UserCaseListItem = {
   ai_next_retry_at?: string | null;
   ai_processed_at?: string | null;
   ai_last_error?: string | null;
+  rescisoria?: RescisoriaAnalysis | null;
   created_at: string;
 };
 
@@ -203,6 +245,7 @@ export type UploadHistoryGeneratedData = {
   risk_score?: number | null;
   complexity_score?: number | null;
   ai_summary?: string | null;
+  rescisoria?: RescisoriaAnalysis | null;
 };
 
 export type UploadHistoryItem = {

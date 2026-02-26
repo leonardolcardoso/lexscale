@@ -95,7 +95,7 @@ Observação relevante: documentos de imagem podem ter extração limitada na au
 Quando o caso está em estado de falha, o botão `Reprocessar AI` reenvia o item para a fila analítica. Esse mecanismo reduz perda operacional e aumenta taxa de conclusão sem reupload do documento.
 
 ## Leitura Completa do Dashboard
-O dashboard está estruturado em cinco abas funcionais.
+O dashboard está estruturado em quatro abas funcionais.
 
 ### 1) Visão Geral
 Objetivo: apresentar a leitura executiva do recorte atual.
@@ -117,9 +117,13 @@ Objetivo: apresentar a leitura executiva do recorte atual.
 - base para priorização imediata.
 
 ### 2) Inteligência Estratégica
-Objetivo: comparar comportamento interno com sinais de mercado.
+Objetivo: comparar comportamento interno com sinais de mercado e centralizar decisões estratégicas.
 
 **Blocos**
+- Análise de Decisões
+- Simulações Avançadas
+- Gêmeo Digital
+- Ações Rescisórias
 - Processos Similares
 - Heatmap de comportamento judicial
 - Benchmark vs. Mercado
@@ -127,32 +131,23 @@ Objetivo: comparar comportamento interno com sinais de mercado.
 **Interpretação**
 - identifica padrões de desfecho;
 - contextualiza o desempenho do usuário frente ao mercado;
+- concentra navegação entre módulos analíticos com contexto comum;
 - apoia decisões táticas por tipo de ação, tribunal e perfil de caso.
 
-### 3) Simulações Avançadas
-Objetivo: suportar decisão por cenário.
-
-**Blocos**
-- Gêmeo Digital (contexto analítico consolidado)
-- Cenários A, B e C
-- Comparativo de Impacto (melhor valor, menor risco, maior velocidade)
-
-**Interpretação**
-- torna explícito o trade-off entre retorno potencial, risco e tempo;
-- orienta escolha de estratégia com critério objetivo.
-
-### 4) Alertas Estratégicos
+### 3) Alertas Estratégicos
 Objetivo: transformar sinais analíticos em fila de ação.
 
 **Blocos**
 - contadores por severidade/categoria;
-- lista detalhada de alertas com ações de gestão.
+- lista detalhada de alertas com ações de gestão;
+- roteamento determinístico para módulo alvo (ex.: Ações Rescisórias).
 
 **Interpretação**
 - priorização operacional contínua;
-- redução de risco de inação em eventos críticos.
+- redução de risco de inação em eventos críticos;
+- preservação de contexto com fluxo de ida e volta.
 
-### 5) Histórico de Uploads
+### 4) Histórico de Uploads
 Objetivo: fornecer trilha de auditoria ponta a ponta.
 
 **Por item de histórico, o usuário visualiza**
@@ -161,6 +156,7 @@ Objetivo: fornecer trilha de auditoria ponta a ponta.
 - dados efetivamente usados na análise;
 - resultado da extração automática;
 - resultado da análise IA (probabilidades, scores e tempo);
+- sinalização de potencial rescisório por caso quando aplicável;
 - conclusão textual da IA para aquele documento.
 
 **Interpretação**

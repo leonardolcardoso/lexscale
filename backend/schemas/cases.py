@@ -32,6 +32,24 @@ class CaseScoresPayload(BaseModel):
     ai_summary: str
 
 
+class RescisoriaFinancialProjectionPayload(BaseModel):
+    estimated_cost_brl: float = Field(default=0.0, ge=0)
+    projected_upside_brl: float = Field(default=0.0, ge=0)
+    projected_net_brl: float = 0.0
+
+
+class RescisoriaAnalysisPayload(BaseModel):
+    eligibility_status: str
+    viability_score: int = Field(ge=0, le=100)
+    recommendation: str
+    grounds_detected: List[str] = Field(default_factory=list)
+    financial_projection: RescisoriaFinancialProjectionPayload = Field(
+        default_factory=RescisoriaFinancialProjectionPayload,
+    )
+    transit_judged_detected: Optional[bool] = None
+    reason: Optional[str] = None
+
+
 class UploadCaseResponse(BaseModel):
     case_id: str
     process_number: str
@@ -75,6 +93,7 @@ class CaseListItem(BaseModel):
     ai_next_retry_at: Optional[datetime] = None
     ai_processed_at: Optional[datetime] = None
     ai_last_error: Optional[str] = None
+    rescisoria: Optional[RescisoriaAnalysisPayload] = None
     created_at: datetime
 
 
@@ -99,6 +118,7 @@ class UploadHistoryGeneratedData(BaseModel):
     risk_score: Optional[float] = None
     complexity_score: Optional[float] = None
     ai_summary: Optional[str] = None
+    rescisoria: Optional[RescisoriaAnalysisPayload] = None
 
 
 class UploadHistoryItem(BaseModel):

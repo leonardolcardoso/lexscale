@@ -10,6 +10,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
 import { useBackNavigation } from "@/hooks/use-back-navigation";
 import { fetchProfile, isUnauthorizedError, logout, updateProfile } from "@/lib/auth";
+import { mapNetworkError, parseApiErrorResponse } from "@/lib/http-errors";
 
 export default function ProfilePage() {
   const [, setLocation] = useLocation();
@@ -22,6 +23,11 @@ export default function ProfilePage() {
     role: "",
     phone: "",
     bio: "",
+  });
+  const [sourceForm, setSourceForm] = useState({
+    name: "",
+    base_url: "",
+    tribunal: "",
   });
 
   const profileQuery = useQuery({
@@ -59,6 +65,50 @@ export default function ProfilePage() {
     onError: (error) => {
       toast({
         title: "Falha ao sair",
+        description: error instanceof Error ? error.message : "Erro desconhecido",
+      });
+    },
+  });
+
+  const sourceMutation = useMutation({
+    mutationFn: async () => {
+      if (!sourceForm.name.trim() || !sourceForm.base_url.trim()) {
+        throw new Error("Informe nome e URL da fonte pública.");
+      }
+
+      try {
+        const res = await fetch("/api/public-data/sources", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({
+            name: sourceForm.name.trim(),
+            base_url: sourceForm.base_url.trim(),
+            tribunal: sourceForm.tribunal.trim() || null,
+            headers: {},
+            enabled: true,
+          }),
+        });
+
+        if (!res.ok) {
+          throw await parseApiErrorResponse(res);
+        }
+
+        return (await res.json()) as Record<string, unknown>;
+      } catch (error) {
+        throw mapNetworkError(error, "Não foi possível cadastrar a fonte pública agora.");
+      }
+    },
+    onSuccess: () => {
+      toast({
+        title: "Fonte cadastrada",
+        description: "Fonte pública cadastrada com sucesso.",
+      });
+      setSourceForm({ name: "", base_url: "", tribunal: "" });
+    },
+    onError: (error) => {
+      toast({
+        title: "Falha ao cadastrar fonte",
         description: error instanceof Error ? error.message : "Erro desconhecido",
       });
     },
@@ -175,6 +225,56 @@ export default function ProfilePage() {
               <Button className="bg-blue-600 hover:bg-blue-500 text-white" onClick={() => updateMutation.mutate()} disabled={updateMutation.isPending}>
                 {updateMutation.isPending ? "Salvando..." : "Salvar Alterações"}
               </Button>
+            </div>
+
+            <div className="rounded-xl border border-slate-700/70 bg-slate-950/45 p-4 space-y-4">
+              <div>
+                <p className="text-sm font-semibold text-slate-100">Cadastro de API pública (opcional)</p>
+                <p className="text-xs text-slate-300">Use somente se quiser adicionar uma fonte própria para sincronização.</p>
+              </div>
+
+              <div className="grid gap-4 md:grid-cols-2">
+                <div className="space-y-2">
+                  <Label htmlFor="source_name">Nome da fonte</Label>
+                  <Input
+                    id="source_name"
+                    value={sourceForm.name}
+                    onChange={(event) => setSourceForm((prev) => ({ ...prev, name: event.target.value }))}
+                    className="border-slate-700 bg-slate-950/60"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="source_tribunal">Tribunal (opcional)</Label>
+                  <Input
+                    id="source_tribunal"
+                    value={sourceForm.tribunal}
+                    onChange={(event) => setSourceForm((prev) => ({ ...prev, tribunal: event.target.value }))}
+                    className="border-slate-700 bg-slate-950/60"
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="source_base_url">URL da API pública</Label>
+                <Input
+                  id="source_base_url"
+                  value={sourceForm.base_url}
+                  onChange={(event) => setSourceForm((prev) => ({ ...prev, base_url: event.target.value }))}
+                  className="border-slate-700 bg-slate-950/60"
+                  placeholder="https://..."
+                />
+              </div>
+
+              <div className="flex justify-end">
+                <Button
+                  variant="outline"
+                  className="border-slate-700 bg-slate-900/50 text-slate-100 hover:bg-slate-800"
+                  onClick={() => sourceMutation.mutate()}
+                  disabled={sourceMutation.isPending}
+                >
+                  {sourceMutation.isPending ? "Salvando..." : "Salvar Fonte"}
+                </Button>
+              </div>
             </div>
           </CardContent>
         </Card>

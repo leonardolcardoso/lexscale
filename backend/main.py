@@ -26,6 +26,7 @@ from backend.models import (
     ProcessCase,
     ProcessDocument,
     PublicDataSource,
+    StrategicAlert,
     User,
     UserProfile,
 )
@@ -35,6 +36,7 @@ from backend.schemas.cases import (
     CaseExtractionPreviewResponse,
     CaseExtractionPayload,
     CaseListItem,
+    RescisoriaAnalysisPayload,
     CaseScoresPayload,
     UploadHistoryGeneratedData,
     UploadHistoryItem,
@@ -48,6 +50,7 @@ from backend.schemas.public_data import (
     PublicRecordUpsertRequest,
 )
 from backend.schemas.strategic_alerts import (
+    AlertActionTarget,
     StrategicAlertActionResponse,
     StrategicAlertItem,
     StrategicAlertListResponse,
@@ -86,6 +89,7 @@ from backend.services.strategic_alerts import (
     scan_all_users_once,
     scan_user_now,
 )
+from backend.services.rescisory import evaluate_case_rescisoria, parse_rescisoria_snapshot
 
 BASE_DIR = Path(__file__).resolve().parent
 load_dotenv(BASE_DIR / ".env")
@@ -212,6 +216,12 @@ def _relative_time_label(value: Optional[datetime]) -> str:
 
 
 def _to_strategic_alert_item(alert) -> StrategicAlertItem:
+    action_target = None
+    if isinstance(alert.action_target, dict):
+        try:
+            action_target = AlertActionTarget.model_validate(alert.action_target)
+        except Exception:
+            action_target = None
     return StrategicAlertItem(
         alert_id=str(alert.id),
         type=alert.category,
@@ -221,6 +231,7 @@ def _to_strategic_alert_item(alert) -> StrategicAlertItem:
         source=alert.source,
         occurrence_count=max(1, int(alert.occurrence_count or 1)),
         contexts=[str(item) for item in (alert.contexts or []) if str(item).strip()],
+        action_target=action_target,
         time=_relative_time_label(alert.notified_at or alert.last_detected_at or alert.created_at),
         created_at=alert.created_at,
         last_detected_at=alert.last_detected_at,
@@ -452,6 +463,87 @@ def _safe_case_extraction_payload(raw_value: Any) -> CaseExtractionPayload:
         return CaseExtractionPayload()
 
 
+def _safe_rescisoria_payload(raw_value: Any) -> Optional[RescisoriaAnalysisPayload]:
+    parsed = parse_rescisoria_snapshot(raw_value)
+    if not parsed:
+        return None
+    try:
+        return RescisoriaAnalysisPayload.model_validate(parsed)
+    except Exception:
+        return None
+
+
+def _upsert_proactive_rescisoria_alert(
+    db: Session,
+    case: ProcessCase,
+    rescisoria_snapshot: Dict[str, Any],
+) -> None:
+    if case.user_id is None:
+        return
+
+    viability_score = int(rescisoria_snapshot.get("viability_score") or 0)
+    if viability_score < 70:
+        return
+
+    process_label = case.process_number or f"Caso {str(case.id)[:8]}"
+    financial = rescisoria_snapshot.get("financial_projection") if isinstance(rescisoria_snapshot.get("financial_projection"), dict) else {}
+    projected_net = float(financial.get("projected_net_brl") or 0.0)
+    fingerprint = f"rescisoria|{case.id}"
+    now = datetime.now(timezone.utc)
+    action_target = {
+        "tab": "inteligencia",
+        "module": "acoes-rescisorias",
+        "case_id": str(case.id),
+        "reason": "potencial_rescisorio",
+    }
+    description = (
+        f"Viabilidade rescisoria em {viability_score}/100 para {process_label}. "
+        f"Projecao liquida estimada: R$ {projected_net:,.2f}."
+    ).replace(",", "X").replace(".", ",").replace("X", ".")
+
+    alert = (
+        db.query(StrategicAlert)
+        .filter(
+            StrategicAlert.user_id == case.user_id,
+            StrategicAlert.fingerprint == fingerprint,
+        )
+        .first()
+    )
+
+    if alert is None:
+        db.add(
+            StrategicAlert(
+                user_id=case.user_id,
+                category="opportunity",
+                title=f"Potencial de Ações Rescisórias detectado: {process_label}",
+                description=description[:420],
+                fingerprint=fingerprint,
+                status="new",
+                source="case_rescisoria",
+                action_target=action_target,
+                occurrence_count=1,
+                contexts=[process_label],
+                first_detected_at=now,
+                last_detected_at=now,
+                notified_at=now,
+            ),
+        )
+        return
+
+    alert.category = "opportunity"
+    alert.title = f"Potencial de Ações Rescisórias detectado: {process_label}"
+    alert.description = description[:420]
+    alert.source = "case_rescisoria"
+    alert.action_target = action_target
+    alert.contexts = [process_label]
+    alert.last_detected_at = now
+    alert.occurrence_count = int(alert.occurrence_count or 0) + 1
+    alert.status = "new"
+    alert.notified_at = now
+    alert.read_at = None
+    alert.dismissed_at = None
+
+
 def _resolve_case_value_range_filter(claim_value: Optional[float]) -> str:
     if claim_value is None:
         return "Todos os Valores"
@@ -649,6 +741,9 @@ def _process_case_ai_enrichment(case_id: uuid_pkg.UUID) -> None:
         case.expected_decision_months = expected_decision_months
         case.risk_score = risk_score
         case.complexity_score = complexity_score
+        rescisoria_snapshot = evaluate_case_rescisoria(case)
+        case.rescisoria_snapshot = rescisoria_snapshot
+        _upsert_proactive_rescisoria_alert(db=db, case=case, rescisoria_snapshot=rescisoria_snapshot)
         if case_embedding is not None:
             case.case_embedding = case_embedding
 
@@ -1119,6 +1214,7 @@ def list_cases(
             ai_next_retry_at=item.ai_next_retry_at,
             ai_processed_at=item.ai_processed_at,
             ai_last_error=item.ai_last_error,
+            rescisoria=_safe_rescisoria_payload(item.rescisoria_snapshot),
             created_at=item.created_at,
         )
         for item in rows
@@ -1228,6 +1324,7 @@ def list_upload_history(
                     risk_score=case_item.risk_score,
                     complexity_score=case_item.complexity_score,
                     ai_summary=case_item.ai_summary,
+                    rescisoria=_safe_rescisoria_payload(case_item.rescisoria_snapshot),
                 ),
             ),
         )

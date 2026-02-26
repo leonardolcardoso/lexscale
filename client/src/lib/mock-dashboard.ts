@@ -378,6 +378,44 @@ export function buildMockDashboardData(filters: DashboardFilters): DashboardData
       ],
     },
     inteligencia: {
+      acoes_rescisorias: {
+        summary:
+          `Triagem rescisória (demo) com ${Math.max(3, opportunitiesCount + 2)} casos avaliados no recorte atual.`,
+        kpis: [
+          { label: "Casos avaliados", value: `${Math.max(3, opportunitiesCount + 2)}`, tone: "blue" },
+          { label: "Elegíveis", value: `${Math.max(1, opportunitiesCount)}`, tone: "emerald" },
+          { label: "Monitoramento", value: `${Math.max(1, opportunitiesCount - 1)}`, tone: "orange" },
+          { label: "Score médio", value: `${Math.round((conservativeSuccess + balancedSuccess + aggressiveSuccess) / 3)}`, tone: "cyan" },
+        ],
+        candidates: [
+          {
+            case_id: buildCaseId(seed, "resc-a"),
+            process_number: buildCaseId(seed, "resc-a"),
+            eligibility_status: "eligible",
+            viability_score: clamp(Math.round(conservativeSuccess), 70, 96),
+            recommendation: "recommend_filing",
+            grounds_detected: ["Erro de fato", "Violacao manifesta de norma juridica"],
+            financial_projection: {
+              estimated_cost_brl: Math.round(costBase * 1000 * 0.035),
+              projected_upside_brl: Math.round(scenarioAValue * 0.6),
+              projected_net_brl: Math.round(scenarioAValue * 0.6 - costBase * 1000 * 0.035),
+            },
+          },
+          {
+            case_id: buildCaseId(seed, "resc-b"),
+            process_number: buildCaseId(seed, "resc-b"),
+            eligibility_status: "uncertain",
+            viability_score: clamp(Math.round(balancedSuccess), 52, 79),
+            recommendation: "monitor",
+            grounds_detected: ["Prova nova"],
+            financial_projection: {
+              estimated_cost_brl: Math.round(costBase * 1000 * 0.04),
+              projected_upside_brl: Math.round(scenarioBValue * 0.42),
+              projected_net_brl: Math.round(scenarioBValue * 0.42 - costBase * 1000 * 0.04),
+            },
+          },
+        ],
+      },
       similar_processes: [
         {
           id: buildCaseId(seed, "similar-a"),

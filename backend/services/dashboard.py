@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from backend.models import CaseDeadline, ProcessCase, PublicCaseRecord
 from backend.services.openai_usage import record_openai_usage
 from backend.schemas.dashboard import (
+    AcoesRescisoriasData,
     AlertCountData,
     AlertasData,
     BenchmarkData,
@@ -28,6 +29,9 @@ from backend.schemas.dashboard import (
     InteligenciaData,
     MetricCardData,
     RadarPoint,
+    RescisoriaCandidateData,
+    RescisoriaFinancialProjectionData,
+    RescisoriaKPIData,
     ScenarioData,
     ScenarioItemData,
     ScoreCardData,
@@ -36,6 +40,7 @@ from backend.schemas.dashboard import (
     VisaoGeralData,
     WeeklyActivityPoint,
 )
+from backend.services.rescisory import evaluate_case_rescisoria, parse_rescisoria_snapshot
 
 logger = logging.getLogger("backend.services.dashboard")
 
@@ -179,6 +184,69 @@ def _action_category(action_type: Optional[str]) -> str:
     if "comerc" in raw or "empres" in raw:
         return "Comercial"
     return "Cível"
+
+
+def _build_rescisoria_data(cases: List[ProcessCase]) -> AcoesRescisoriasData:
+    evaluated: List[Dict[str, Any]] = []
+    for case in cases:
+        existing = parse_rescisoria_snapshot(case.rescisoria_snapshot)
+        snapshot = existing or (evaluate_case_rescisoria(case) if (case.ai_status or "") == "completed" else None)
+        if not snapshot:
+            continue
+
+        financial = snapshot.get("financial_projection") if isinstance(snapshot.get("financial_projection"), dict) else {}
+        evaluated.append(
+            {
+                "case_id": str(case.id),
+                "process_number": case.process_number or f"Caso {str(case.id)[:8]}",
+                "eligibility_status": str(snapshot.get("eligibility_status") or "uncertain"),
+                "viability_score": int(max(0, min(100, int(snapshot.get("viability_score") or 0)))),
+                "recommendation": str(snapshot.get("recommendation") or "monitor"),
+                "grounds_detected": [str(item) for item in (snapshot.get("grounds_detected") or []) if str(item).strip()],
+                "financial_projection": RescisoriaFinancialProjectionData(
+                    estimated_cost_brl=float(financial.get("estimated_cost_brl") or 0.0),
+                    projected_upside_brl=float(financial.get("projected_upside_brl") or 0.0),
+                    projected_net_brl=float(financial.get("projected_net_brl") or 0.0),
+                ),
+            },
+        )
+
+    evaluated.sort(key=lambda item: item["viability_score"], reverse=True)
+    top_candidates = evaluated[:8]
+    total = len(evaluated)
+    eligible_count = sum(1 for item in evaluated if item["eligibility_status"] == "eligible")
+    uncertain_count = sum(1 for item in evaluated if item["eligibility_status"] == "uncertain")
+    average_score = round(mean([item["viability_score"] for item in evaluated]), 1) if evaluated else 0.0
+
+    if total == 0:
+        summary = "Sem base suficiente para triagem de ações rescisórias neste recorte."
+    else:
+        summary = (
+            f"Triagem rescisória com {total} caso(s) analisado(s); "
+            f"{eligible_count} com recomendação de ajuizamento imediato."
+        )
+
+    return AcoesRescisoriasData(
+        summary=summary,
+        kpis=[
+            RescisoriaKPIData(label="Casos avaliados", value=str(total), tone="blue"),
+            RescisoriaKPIData(label="Elegíveis", value=str(eligible_count), tone="emerald"),
+            RescisoriaKPIData(label="Em monitoramento", value=str(uncertain_count), tone="orange"),
+            RescisoriaKPIData(label="Score médio", value=f"{average_score:.1f}", tone="cyan"),
+        ],
+        candidates=[
+            RescisoriaCandidateData(
+                case_id=item["case_id"],
+                process_number=item["process_number"],
+                eligibility_status=item["eligibility_status"],
+                viability_score=item["viability_score"],
+                recommendation=item["recommendation"],
+                grounds_detected=item["grounds_detected"],
+                financial_projection=item["financial_projection"],
+            )
+            for item in top_candidates
+        ],
+    )
 
 
 def _extract_response_text(response: Any) -> str:
@@ -773,6 +841,8 @@ def build_dashboard_data(
     else:
         months_trend = "Sem base comparável"
 
+    acoes_rescisorias = _build_rescisoria_data(filtered_user_cases)
+
     inteligencia = InteligenciaData(
         similar_processes=similar_processes,
         heatmap_columns=heatmap_columns,
@@ -801,6 +871,7 @@ def build_dashboard_data(
                 trend_color="emerald" if acordo_gap >= 0 else "orange",
             ),
         ],
+        acoes_rescisorias=acoes_rescisorias,
     )
 
     baseline_success = success_rate if success_values else market_success

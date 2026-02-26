@@ -23,6 +23,7 @@ import {
   Upload,
   RefreshCcw,
   History,
+  ChevronDown,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -70,6 +71,7 @@ const EMPTY_UPLOAD_FORM = {
 };
 
 type DashboardTab = "visao-geral" | "inteligencia" | "simulacoes" | "alertas" | "historico-uploads";
+type StrategicModule = "analise-decisoes" | "simulacoes-avancadas" | "gemeo-digital" | "acoes-rescisorias";
 type CardDetailVariant = "default" | "scenario";
 
 type CardDetail = {
@@ -82,6 +84,7 @@ type CardDetail = {
   recommendationText?: string;
   sourceNote?: string;
   targetTab?: DashboardTab;
+  targetModule?: StrategicModule;
   targetScenarioTitle?: string;
 };
 
@@ -140,6 +143,12 @@ type StrategicAlertItem = {
   source: string;
   occurrence_count: number;
   contexts: string[];
+  action_target?: {
+    tab: string;
+    module?: string | null;
+    case_id?: string | null;
+    reason?: string | null;
+  } | null;
   time: string;
   created_at: string;
   last_detected_at: string;
@@ -641,6 +650,34 @@ function resolveTabLabel(tab: DashboardTab): string {
   }
 }
 
+function resolveStrategicModuleLabel(module: StrategicModule): string {
+  switch (module) {
+    case "analise-decisoes":
+      return "Análise de Decisões";
+    case "simulacoes-avancadas":
+      return "Simulações Avançadas";
+    case "gemeo-digital":
+      return "Gêmeo Digital";
+    case "acoes-rescisorias":
+      return "Ações Rescisórias";
+    default:
+      return "Análise de Decisões";
+  }
+}
+
+function normalizeTabForNavigation(tab: DashboardTab): DashboardTab {
+  return tab === "simulacoes" ? "inteligencia" : tab;
+}
+
+function parseModuleParam(raw: string | null): StrategicModule | null {
+  if (!raw) return null;
+  if (raw === "analise-decisoes") return "analise-decisoes";
+  if (raw === "simulacoes-avancadas") return "simulacoes-avancadas";
+  if (raw === "gemeo-digital") return "gemeo-digital";
+  if (raw === "acoes-rescisorias") return "acoes-rescisorias";
+  return null;
+}
+
 function parseExtractedClaimValue(rawClaimValue: unknown): { textValue: string; numericValue: number | null } {
   if (typeof rawClaimValue === "number" && Number.isFinite(rawClaimValue)) {
     return { textValue: String(rawClaimValue), numericValue: rawClaimValue };
@@ -658,17 +695,18 @@ function parseExtractedClaimValue(rawClaimValue: unknown): { textValue: string; 
 
 export default function Dashboard() {
   const [activeTab, setActiveTab] = useState<DashboardTab>("visao-geral");
+  const [strategicModule, setStrategicModule] = useState<StrategicModule>("analise-decisoes");
   const [focusedSimulationScenario, setFocusedSimulationScenario] = useState<string | null>(null);
+  const [navigationOrigin, setNavigationOrigin] = useState<string | null>(null);
+  const [navigationAlertId, setNavigationAlertId] = useState<string | null>(null);
+  const [navigationCaseId, setNavigationCaseId] = useState<string | null>(null);
+  const [forcedAlertCategoryFilter, setForcedAlertCategoryFilter] = useState<AlertCategory | null>(null);
   const [isFiltering, setIsFiltering] = useState(false);
+  const [isUploadPanelOpen, setIsUploadPanelOpen] = useState(true);
   const [draftFilters, setDraftFilters] = useState<DashboardFilters>(DEFAULT_FILTERS);
   const [appliedFilters, setAppliedFilters] = useState<DashboardFilters>(DEFAULT_FILTERS);
   const [uploadFile, setUploadFile] = useState<File | null>(null);
   const [uploadForm, setUploadForm] = useState(EMPTY_UPLOAD_FORM);
-  const [sourceForm, setSourceForm] = useState({
-    name: "",
-    base_url: "",
-    tribunal: "",
-  });
   const [currentPath, setLocation] = useLocation();
   const isDemoMode = currentPath === "/dashboard-demo";
   const queryClient = useQueryClient();
@@ -706,6 +744,53 @@ export default function Dashboard() {
     void queryClient.refetchQueries({ queryKey: ["strategic-alerts"], type: "active" });
   }, [queryClient]);
 
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const requestedTab = params.get("tab");
+    const requestedModule = parseModuleParam(params.get("module"));
+
+    if (requestedTab === "visao-geral" || requestedTab === "inteligencia" || requestedTab === "alertas" || requestedTab === "historico-uploads") {
+      setActiveTab(requestedTab);
+    } else if (requestedTab === "simulacoes") {
+      setActiveTab("inteligencia");
+      setStrategicModule("simulacoes-avancadas");
+    }
+
+    if (requestedModule) {
+      setStrategicModule(requestedModule);
+    }
+
+    const origin = params.get("from");
+    setNavigationOrigin(origin || null);
+    setNavigationAlertId(params.get("alertId"));
+    setNavigationCaseId(params.get("caseId"));
+  }, []);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    params.set("tab", normalizeTabForNavigation(activeTab));
+
+    if (normalizeTabForNavigation(activeTab) === "inteligencia") {
+      params.set("module", strategicModule);
+    } else {
+      params.delete("module");
+    }
+
+    if (navigationOrigin) params.set("from", navigationOrigin);
+    else params.delete("from");
+    if (navigationAlertId) params.set("alertId", navigationAlertId);
+    else params.delete("alertId");
+    if (navigationCaseId) params.set("caseId", navigationCaseId);
+    else params.delete("caseId");
+
+    const query = params.toString();
+    const nextUrl = `${window.location.pathname}${query ? `?${query}` : ""}`;
+    const currentUrl = `${window.location.pathname}${window.location.search}`;
+    if (nextUrl !== currentUrl) {
+      window.history.replaceState(window.history.state, "", nextUrl);
+    }
+  }, [activeTab, navigationAlertId, navigationCaseId, navigationOrigin, strategicModule]);
+
   const meQuery = useQuery({
     queryKey: ["auth-me"],
     queryFn: fetchMe,
@@ -723,8 +808,8 @@ export default function Dashboard() {
   });
 
   const strategicAlertsQuery = useQuery({
-    queryKey: ["strategic-alerts", "new"],
-    queryFn: () => fetchStrategicAlerts("new", 100),
+    queryKey: ["strategic-alerts", "active"],
+    queryFn: () => fetchStrategicAlerts("active", 100),
     enabled: !isDemoMode && meQuery.isSuccess,
     retry: false,
     refetchInterval: isCasePollingBoosted ? 10000 : 60000,
@@ -1061,44 +1146,6 @@ export default function Dashboard() {
     },
   });
 
-  const sourceMutation = useMutation({
-    mutationFn: async () => {
-      if (!sourceForm.name.trim() || !sourceForm.base_url.trim()) {
-        throw new Error("Informe nome e URL da fonte pública.");
-      }
-      try {
-        const res = await fetch("/api/public-data/sources", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          credentials: "include",
-          body: JSON.stringify({
-            name: sourceForm.name.trim(),
-            base_url: sourceForm.base_url.trim(),
-            tribunal: sourceForm.tribunal.trim() || null,
-            headers: {},
-            enabled: true,
-          }),
-        });
-        return await parseJsonOrThrow<Record<string, unknown>>(res);
-      } catch (error) {
-        throw mapNetworkError(error, "Não foi possível cadastrar a fonte pública agora.");
-      }
-    },
-    onSuccess: () => {
-      toast({
-        title: "Fonte cadastrada",
-        description: "Fonte pública cadastrada com sucesso.",
-      });
-      setSourceForm({ name: "", base_url: "", tribunal: "" });
-    },
-    onError: (error) => {
-      toast({
-        title: "Falha ao cadastrar fonte",
-        description: error instanceof Error ? error.message : "Erro desconhecido",
-      });
-    },
-  });
-
   const handleApplyFilters = () => {
     setIsFiltering(true);
     setAppliedFilters(draftFilters);
@@ -1121,6 +1168,30 @@ export default function Dashboard() {
     return caseDashboardContextQuery.data ?? null;
   }, [appliedFilters, caseDashboardContextQuery.data, isDemoMode, selectedHistoryCase]);
   const dashboardData = useMemo(() => baseDashboardData, [baseDashboardData]);
+  const inboxAlertDetails = useMemo<DashboardAlertItem[]>(() => {
+    if (isDemoMode || strategicAlertItems.length === 0) {
+      return (dashboardData?.alertas.details as DashboardAlertItem[] | undefined) ?? [];
+    }
+    return strategicAlertItems.map((item) => ({
+      type: item.type,
+      title: item.title,
+      time: item.time,
+      desc: item.desc,
+      alert_id: item.alert_id,
+      status: item.status,
+      action_target: item.action_target ?? undefined,
+    }));
+  }, [dashboardData?.alertas.details, isDemoMode, strategicAlertItems]);
+  const dashboardAlertData = useMemo(() => {
+    if (!dashboardData) return null;
+    return {
+      ...dashboardData,
+      alertas: {
+        ...dashboardData.alertas,
+        details: inboxAlertDetails,
+      },
+    };
+  }, [dashboardData, inboxAlertDetails]);
   const processingProgress = useMemo(() => {
     if (isDemoMode || userCases.length === 0) {
       return null;
@@ -1363,6 +1434,13 @@ export default function Dashboard() {
   }
 
   const getAlertKey = (item: DashboardAlertItem) => (item.alert_id ? `id::${item.alert_id}` : `${item.type}::${item.title}::${item.time}`);
+  const resolveAlertCategory = (type: string): AlertCategory => {
+    const normalized = type.toLowerCase().trim();
+    if (normalized === "critical" || normalized.includes("crit")) return "critical";
+    if (normalized === "warning" || normalized.includes("warn") || normalized.includes("aten")) return "warning";
+    if (normalized === "opportunity" || normalized.includes("oppor") || normalized.includes("oportun")) return "opportunity";
+    return "info";
+  };
   const resolveAlertToastVariant = (type: string): "default" | "warning" | "destructive" => {
     const normalized = type.toLowerCase().trim();
     if (normalized === "critical" || normalized.includes("crit")) return "destructive";
@@ -1436,17 +1514,45 @@ export default function Dashboard() {
     });
   };
 
-  const handlePrimaryAlertAction = (item: { type: string; title: string }) => {
-    const normalized = item.type.toLowerCase();
-    if (normalized === "opportunity" || normalized.includes("oppor") || normalized.includes("oportun")) {
-      setActiveTab("simulacoes");
+  const handlePrimaryAlertAction = (item: DashboardAlertItem) => {
+    const target = item.action_target;
+    const parsedModule = parseModuleParam(target?.module ?? null);
+    const normalizedType = item.type.toLowerCase();
+
+    if (target?.tab === "historico-uploads") {
+      setActiveTab("historico-uploads");
+      setNavigationOrigin("alerta");
+      setNavigationAlertId(item.alert_id ?? null);
+      setNavigationCaseId(target.case_id ?? null);
       toast({
-        title: "Abrindo Simulações Avançadas",
+        title: "Abrindo Histórico de Uploads",
         description: item.title,
       });
       return;
     }
+
+    if (target?.tab === "alertas") {
+      setActiveTab("alertas");
+      setNavigationOrigin("alerta");
+      setNavigationAlertId(item.alert_id ?? null);
+      setNavigationCaseId(target.case_id ?? null);
+      toast({
+        title: "Abrindo Alertas Estratégicos",
+        description: item.title,
+      });
+      return;
+    }
+
     setActiveTab("inteligencia");
+    setStrategicModule(
+      parsedModule ??
+        (normalizedType === "opportunity" || normalizedType.includes("oportun")
+          ? "acoes-rescisorias"
+          : "analise-decisoes"),
+    );
+    setNavigationOrigin("alerta");
+    setNavigationAlertId(item.alert_id ?? null);
+    setNavigationCaseId(target?.case_id ?? null);
     toast({
       title: "Abrindo Inteligência Estratégica",
       description: item.title,
@@ -1454,12 +1560,19 @@ export default function Dashboard() {
   };
 
   const openCardDetail = (detail: CardDetail) => {
-    const targetTab = detail.targetTab ?? activeTab;
+    const targetTab = detail.targetTab === "simulacoes" ? "inteligencia" : detail.targetTab ?? activeTab;
     if (targetTab !== activeTab) {
       setActiveTab(targetTab);
     }
+    if (targetTab === "inteligencia") {
+      if (detail.targetModule) {
+        setStrategicModule(detail.targetModule);
+      } else if (detail.targetTab === "simulacoes") {
+        setStrategicModule("simulacoes-avancadas");
+      }
+    }
     setSelectedSimilarProcess(null);
-    if (targetTab === "simulacoes") {
+    if (detail.targetTab === "simulacoes" || detail.targetModule === "simulacoes-avancadas") {
       setFocusedSimulationScenario(detail.targetScenarioTitle || null);
     } else {
       setFocusedSimulationScenario(null);
@@ -1490,102 +1603,132 @@ export default function Dashboard() {
     if (activeTab !== "inteligencia") {
       setActiveTab("inteligencia");
     }
+    setStrategicModule("analise-decisoes");
     setFocusedSimulationScenario(null);
     setSelectedCardDetail(null);
     setSelectedSimilarProcess(buildSimilarProcessDetail(item, appliedFilters, isDemoMode));
   };
   const isScenarioDetailModal = selectedCardDetail?.variant === "scenario";
-  const alertTabBadgeCount = dashboardData?.alertas.details.length || 0;
+  const alertTabBadgeCount = inboxAlertDetails.length || 0;
+  const highlightedRescisoriaScore =
+    navigationCaseId && dashboardData
+      ? dashboardData.inteligencia.acoes_rescisorias.candidates.find((item) => item.case_id === navigationCaseId)?.viability_score ?? null
+      : null;
+  const breadcrumbLabel =
+    normalizeTabForNavigation(activeTab) === "inteligencia"
+      ? `Dashboard > ${resolveTabLabel("inteligencia")} > ${resolveStrategicModuleLabel(strategicModule)}`
+      : `Dashboard > ${resolveTabLabel(normalizeTabForNavigation(activeTab))}`;
 
   return (
     <div className="dashboard-shell min-h-screen flex flex-col bg-[radial-gradient(circle_at_8%_-10%,rgba(37,99,235,0.35),transparent_35%),radial-gradient(circle_at_90%_-20%,rgba(20,184,166,0.2),transparent_35%),linear-gradient(180deg,#070b1a_0%,#090f22_55%,#070c1a_100%)]">
-      <header className="sticky top-0 z-50 border-b border-slate-800/80 bg-slate-950/85 px-4 py-3 backdrop-blur-xl lg:flex lg:items-center lg:gap-3 lg:px-5 lg:py-2 xl:h-16 xl:px-6 xl:py-0">
-        <Link
-          href="/"
-          className="brand-logo-chip flex items-center gap-2 rounded-xl px-2.5 py-1.5 shadow-sm transition-colors"
-        >
-          <Scale className="brand-logo-icon h-6 w-6" />
-          <span className="brand-logo-title text-xl font-bold tracking-tight">LexScale</span>
-        </Link>
+      <header className="sticky top-0 z-50 border-b border-slate-800/80 bg-slate-950/85 px-4 py-3 backdrop-blur-xl lg:flex lg:items-center lg:px-5 lg:py-2 xl:h-16 xl:px-6 xl:py-0">
+        <div className="mx-auto flex w-full flex-col gap-3 lg:h-full lg:grid lg:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] lg:items-center lg:gap-3">
+          <Link
+            href="/"
+            className="brand-logo-chip flex items-center gap-2 rounded-xl px-2.5 py-1.5 shadow-sm transition-colors lg:justify-self-start"
+          >
+            <Scale className="brand-logo-icon h-6 w-6" />
+            <span className="brand-logo-title text-xl font-bold tracking-tight">LexScale</span>
+          </Link>
 
-        <div className="mt-3 w-full rounded-xl border border-slate-800 bg-slate-900/80 p-1 lg:mt-0 lg:w-auto lg:max-w-full lg:flex-none lg:overflow-x-auto">
-          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:flex lg:w-max lg:gap-2">
-            <TabButton active={activeTab === "visao-geral"} onClick={() => setActiveTab("visao-geral")} icon={<LayoutDashboard size={16} />} text="Visão Geral" />
-            <TabButton active={activeTab === "inteligencia"} onClick={() => setActiveTab("inteligencia")} icon={<BrainCircuit size={16} />} text="Inteligência Estratégica" />
-            <TabButton active={activeTab === "simulacoes"} onClick={() => setActiveTab("simulacoes")} icon={<ActivitySquare size={16} />} text="Simulações Avançadas" />
-            <TabButton
-              active={activeTab === "alertas"}
-              onClick={() => setActiveTab("alertas")}
-              icon={<BellRing size={16} />}
-              text="Alertas Estratégicos"
-              badgeCount={alertTabBadgeCount}
-            />
-            <TabButton
-              active={activeTab === "historico-uploads"}
-              onClick={() => setActiveTab("historico-uploads")}
-              icon={<History size={16} />}
-              text="Histórico de Uploads"
-              badgeCount={uploadHistoryItems.length}
-            />
-          </div>
-        </div>
-
-        <div className="mt-3 flex flex-wrap items-center justify-center gap-2 sm:gap-3 lg:mt-0 lg:ml-auto lg:flex-none lg:justify-end">
-          <div className="hidden items-center gap-2 text-sm text-slate-300 xl:flex">
-            <span className="relative flex h-2 w-2">
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-              <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
-            </span>
-            {dashboardData?.updated_label || "Atualizando..."}
-          </div>
-          {processingProgress ? (
-            <div className="hidden items-center gap-2 rounded-full border border-cyan-400/30 bg-cyan-500/10 px-3 py-1 text-xs font-bold text-cyan-200 xl:flex">
-              <ActivitySquare size={12} />
-              IA {processingProgress.percent}%
+          <div className="w-full rounded-xl border border-slate-800 bg-slate-900/80 p-1 lg:w-auto lg:max-w-full lg:justify-self-center lg:overflow-x-auto">
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:flex lg:w-max lg:justify-center lg:gap-2">
+              <TabButton active={activeTab === "visao-geral"} onClick={() => setActiveTab("visao-geral")} icon={<LayoutDashboard size={16} />} text="Visão Geral" />
+              <TabButton active={activeTab === "inteligencia"} onClick={() => setActiveTab("inteligencia")} icon={<BrainCircuit size={16} />} text="Inteligência Estratégica" />
+              <TabButton
+                active={activeTab === "alertas"}
+                onClick={() => setActiveTab("alertas")}
+                icon={<BellRing size={16} />}
+                text="Alertas Estratégicos"
+                badgeCount={alertTabBadgeCount}
+              />
+              <TabButton
+                active={activeTab === "historico-uploads"}
+                onClick={() => setActiveTab("historico-uploads")}
+                icon={<History size={16} />}
+                text="Histórico de Uploads"
+                badgeCount={uploadHistoryItems.length}
+              />
             </div>
-          ) : null}
-          {isDemoMode ? (
-            <>
-              <span className="rounded-full border border-cyan-400/40 bg-cyan-500/15 px-3 py-1 text-[10px] font-bold uppercase tracking-[0.16em] text-cyan-200">
-                Modo Demo
+          </div>
+
+          <div className="flex flex-wrap items-center justify-center gap-2 sm:gap-3 lg:justify-self-end lg:justify-end">
+            <div className="hidden items-center gap-2 text-sm text-slate-300 xl:flex">
+              <span className="relative flex h-2 w-2">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
               </span>
-              <Button
-                variant="outline"
-                size="sm"
-                className="border-slate-300 bg-slate-100 text-slate-700 hover:bg-slate-200 dark:border-slate-700 dark:bg-slate-900/60 dark:text-slate-200 dark:hover:bg-slate-800"
-                onClick={() => setLocation("/auth?tab=login")}
-              >
-                Fazer Login
-              </Button>
-            </>
-          ) : (
-            <>
-              <Button
-                variant="outline"
-                size="sm"
-                className="border-slate-300 bg-slate-100 text-slate-700 hover:bg-slate-200 dark:border-slate-700 dark:bg-slate-900/60 dark:text-slate-200 dark:hover:bg-slate-800"
-                onClick={() => setLocation("/profile")}
-              >
-                Perfil
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                className="border-slate-300 bg-slate-100 text-slate-700 hover:bg-slate-200 dark:border-slate-700 dark:bg-slate-900/60 dark:text-slate-200 dark:hover:bg-slate-800"
-                onClick={() => logoutMutation.mutate()}
-                disabled={logoutMutation.isPending}
-              >
-                {logoutMutation.isPending ? "Saindo..." : "Sair"}
-              </Button>
-              <Button variant="ghost" size="icon" className="rounded-full" onClick={() => setLocation("/profile")}>
-                <div className="w-8 h-8 bg-blue-600 text-white rounded-full flex items-center justify-center font-bold text-sm">{userInitials}</div>
-              </Button>
-            </>
-          )}
+              {dashboardData?.updated_label || "Atualizando..."}
+            </div>
+            {processingProgress ? (
+              <div className="hidden items-center gap-2 rounded-full border border-cyan-400/30 bg-cyan-500/10 px-3 py-1 text-xs font-bold text-cyan-200 xl:flex">
+                <ActivitySquare size={12} />
+                IA {processingProgress.percent}%
+              </div>
+            ) : null}
+            {isDemoMode ? (
+              <>
+                <span className="rounded-full border border-cyan-400/40 bg-cyan-500/15 px-3 py-1 text-[10px] font-bold uppercase tracking-[0.16em] text-cyan-200">
+                  Modo Demo
+                </span>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="border-slate-300 bg-slate-100 text-slate-700 hover:bg-slate-200 dark:border-slate-700 dark:bg-slate-900/60 dark:text-slate-200 dark:hover:bg-slate-800"
+                  onClick={() => setLocation("/auth?tab=login")}
+                >
+                  Fazer Login
+                </Button>
+              </>
+            ) : (
+              <>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="border-slate-300 bg-slate-100 text-slate-700 hover:bg-slate-200 dark:border-slate-700 dark:bg-slate-900/60 dark:text-slate-200 dark:hover:bg-slate-800"
+                  onClick={() => setLocation("/profile")}
+                >
+                  Perfil
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="border-slate-300 bg-slate-100 text-slate-700 hover:bg-slate-200 dark:border-slate-700 dark:bg-slate-900/60 dark:text-slate-200 dark:hover:bg-slate-800"
+                  onClick={() => logoutMutation.mutate()}
+                  disabled={logoutMutation.isPending}
+                >
+                  {logoutMutation.isPending ? "Saindo..." : "Sair"}
+                </Button>
+                <Button variant="ghost" size="icon" className="rounded-full" onClick={() => setLocation("/profile")}>
+                  <div className="w-8 h-8 bg-blue-600 text-white rounded-full flex items-center justify-center font-bold text-sm">{userInitials}</div>
+                </Button>
+              </>
+            )}
+          </div>
         </div>
       </header>
 
       <main className={`flex-1 w-full max-w-[1400px] mx-auto p-4 sm:p-6 transition-opacity duration-300 ${isFiltering ? "opacity-50 pointer-events-none" : "opacity-100"}`}>
+        <section className={`${PANEL_SOFT_CLASS} mb-4 flex flex-wrap items-center justify-between gap-3 p-3`}>
+          <p className="text-xs font-semibold uppercase tracking-wide text-slate-300">{breadcrumbLabel}</p>
+          {navigationOrigin &&
+          !((navigationOrigin === "alerta" && activeTab === "alertas") || (navigationOrigin === "historico" && activeTab === "historico-uploads")) ? (
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-8 border-slate-700 bg-slate-900/40 text-slate-200 hover:bg-slate-800"
+              onClick={() => {
+                if (navigationOrigin === "alerta") {
+                  setActiveTab("alertas");
+                } else if (navigationOrigin === "historico") {
+                  setActiveTab("historico-uploads");
+                }
+              }}
+            >
+              Voltar para {navigationOrigin === "alerta" ? "Alertas" : "Histórico"}
+            </Button>
+          ) : null}
+        </section>
         {isDemoMode ? (
           <section className={`${PANEL_SOFT_CLASS} p-4 mb-6`}>
             <p className="text-sm text-slate-300">
@@ -1593,163 +1736,166 @@ export default function Dashboard() {
             </p>
           </section>
         ) : (
-          <section className={`${PANEL_CLASS} p-4 mb-6`}>
-          <div className="mb-4 flex flex-wrap items-center justify-between gap-4">
-            <h3 className="font-bold text-slate-100 flex items-center gap-2">
-              <Upload size={18} className="text-cyan-300" />
-              Upload de Processo e Enriquecimento
-            </h3>
-            <Button
-              onClick={() => syncMutation.mutate()}
-              disabled={syncMutation.isPending}
-              variant="outline"
-              className="h-9 gap-2 border-slate-700 bg-slate-900/50 text-slate-100 hover:bg-slate-800"
-            >
-              <RefreshCcw size={14} className={syncMutation.isPending ? "animate-spin" : ""} />
-              {syncMutation.isPending ? "Sincronizando..." : "Sincronizar APIs Públicas"}
-            </Button>
-          </div>
-
-          <div className="grid md:grid-cols-6 gap-3 items-end">
-            <div className="md:col-span-2">
-              <label className="text-xs font-semibold text-slate-300 uppercase">Arquivo do processo</label>
-              <input
-                type="file"
-                className="mt-1 block w-full text-sm text-slate-300 file:mr-3 file:py-2 file:px-3 file:rounded-md file:border file:border-slate-700 file:bg-slate-900 file:text-cyan-200 hover:file:bg-slate-800"
-                onChange={handleUploadFileChange}
-                disabled={extractPreviewMutation.isPending || uploadMutation.isPending}
-              />
-              {extractPreviewMutation.isPending ? <p className="mt-1 text-[11px] text-cyan-300">Extraindo campos automaticamente...</p> : null}
-            </div>
-            <InputField label="Número do processo" value={uploadForm.process_number} onChange={(value) => setUploadForm((s) => ({ ...s, process_number: value }))} />
-            <InputField label="Tribunal" value={uploadForm.tribunal} onChange={(value) => setUploadForm((s) => ({ ...s, tribunal: value }))} />
-            <InputField label="Juiz" value={uploadForm.judge} onChange={(value) => setUploadForm((s) => ({ ...s, judge: value }))} />
-            <InputField label="Tipo de ação" value={uploadForm.action_type} onChange={(value) => setUploadForm((s) => ({ ...s, action_type: value }))} />
-          </div>
-          <div className="grid md:grid-cols-6 gap-3 items-end mt-3">
-            <InputField label="Valor causa (R$)" value={uploadForm.claim_value} onChange={(value) => setUploadForm((s) => ({ ...s, claim_value: value }))} />
-            <div className="md:col-span-5 flex justify-stretch md:justify-end">
-              <Button
-                onClick={() => uploadMutation.mutate()}
-                disabled={uploadMutation.isPending || extractPreviewMutation.isPending || !uploadFile}
-                className="h-[38px] w-full gap-2 bg-cyan-500 px-6 font-bold text-slate-950 hover:bg-cyan-400 md:w-auto"
-              >
-                <Upload size={16} />
-                {extractPreviewMutation.isPending ? "Extraindo..." : uploadMutation.isPending ? "Enviando..." : "Enviar para Analise"}
-              </Button>
-            </div>
-          </div>
-
-          <div className="mt-5 pt-4 border-t border-slate-800">
-            <p className="text-xs font-semibold text-slate-300 uppercase mb-3">Cadastro de fonte pública</p>
-            <div className="grid md:grid-cols-6 gap-3 items-end">
-              <InputField label="Nome da fonte" value={sourceForm.name} onChange={(value) => setSourceForm((s) => ({ ...s, name: value }))} />
-              <div className="md:col-span-3">
-                <InputField label="URL da API pública" value={sourceForm.base_url} onChange={(value) => setSourceForm((s) => ({ ...s, base_url: value }))} />
-              </div>
-              <InputField label="Tribunal (opcional)" value={sourceForm.tribunal} onChange={(value) => setSourceForm((s) => ({ ...s, tribunal: value }))} />
-              <div className="flex justify-stretch md:justify-end">
+          <section className={`${PANEL_CLASS} mb-6 p-4`}>
+            <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+              <h3 className="flex items-center gap-2 font-bold text-slate-100">
+                <Upload size={18} className="text-cyan-300" />
+                Upload de Processo e Enriquecimento
+              </h3>
+              <div className="flex flex-wrap items-center gap-2">
                 <Button
-                  onClick={() => sourceMutation.mutate()}
-                  disabled={sourceMutation.isPending}
+                  type="button"
                   variant="outline"
-                  className="h-[38px] w-full gap-2 border-slate-700 bg-slate-900/50 text-slate-100 hover:bg-slate-800 md:w-auto"
+                  className="h-9 gap-2 border-slate-700 bg-slate-900/50 text-slate-100 hover:bg-slate-800"
+                  onClick={() => setIsUploadPanelOpen((prev) => !prev)}
+                  aria-expanded={isUploadPanelOpen}
+                  aria-controls="upload-processo-panel"
                 >
-                  {sourceMutation.isPending ? "Salvando..." : "Salvar Fonte"}
+                  <ChevronDown size={14} className={`transition-transform ${isUploadPanelOpen ? "rotate-180" : ""}`} />
+                  {isUploadPanelOpen ? "Recolher" : "Expandir"}
+                </Button>
+                <Button
+                  onClick={() => syncMutation.mutate()}
+                  disabled={syncMutation.isPending}
+                  variant="outline"
+                  className="h-9 gap-2 border-slate-700 bg-slate-900/50 text-slate-100 hover:bg-slate-800"
+                >
+                  <RefreshCcw size={14} className={syncMutation.isPending ? "animate-spin" : ""} />
+                  {syncMutation.isPending ? "Sincronizando..." : "Sincronizar APIs Públicas"}
                 </Button>
               </div>
             </div>
-          </div>
 
-          <div className="mt-5 border-t border-slate-200 pt-4 dark:border-slate-800">
-            <div className="mb-3 flex items-center justify-between gap-3">
-              <p className="text-xs font-semibold uppercase text-slate-300">Análises AI dos seus casos</p>
-              {isCasePollingBoosted ? (
-                <span className="rounded-full border border-cyan-300 bg-cyan-100 px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-cyan-800 dark:border-cyan-400/40 dark:bg-cyan-500/15 dark:text-cyan-200">
-                  Monitoramento intensivo ativo
-                </span>
-              ) : null}
-            </div>
-            {userCasesQuery.isLoading ? (
-              <div className="rounded-xl border border-slate-200 bg-white px-4 py-5 text-sm text-slate-600 dark:border-slate-800 dark:bg-slate-900/40 dark:text-slate-300">
-                Carregando status das análises...
-              </div>
-            ) : userCasesQuery.isError ? (
-              <div className="rounded-xl border border-red-500/30 bg-red-950/30 px-4 py-5 text-sm text-red-200">
-                Falha ao carregar casos: {userCasesQuery.error instanceof Error ? userCasesQuery.error.message : "erro desconhecido"}
-              </div>
-            ) : userCases.length === 0 ? (
-              <div className="rounded-xl border border-slate-200 bg-white px-4 py-5 text-sm text-slate-600 dark:border-slate-800 dark:bg-slate-900/40 dark:text-slate-300">
-                Nenhum caso enviado ainda.
+            {isUploadPanelOpen ? (
+              <div id="upload-processo-panel" className="space-y-5">
+                <div className="grid items-end gap-3 md:grid-cols-6">
+                  <div className="md:col-span-2">
+                    <label className="text-xs font-semibold uppercase text-slate-300">Arquivo do processo</label>
+                    <input
+                      type="file"
+                      className="mt-1 block w-full text-sm text-slate-300 file:mr-3 file:rounded-md file:border file:border-slate-700 file:bg-slate-900 file:px-3 file:py-2 file:text-cyan-200 hover:file:bg-slate-800"
+                      onChange={handleUploadFileChange}
+                      disabled={extractPreviewMutation.isPending || uploadMutation.isPending}
+                    />
+                    {extractPreviewMutation.isPending ? <p className="mt-1 text-[11px] text-cyan-300">Extraindo campos automaticamente...</p> : null}
+                  </div>
+                  <InputField label="Número do processo" value={uploadForm.process_number} onChange={(value) => setUploadForm((s) => ({ ...s, process_number: value }))} />
+                  <InputField label="Tribunal" value={uploadForm.tribunal} onChange={(value) => setUploadForm((s) => ({ ...s, tribunal: value }))} />
+                  <InputField label="Juiz" value={uploadForm.judge} onChange={(value) => setUploadForm((s) => ({ ...s, judge: value }))} />
+                  <InputField label="Tipo de ação" value={uploadForm.action_type} onChange={(value) => setUploadForm((s) => ({ ...s, action_type: value }))} />
+                </div>
+                <div className="mt-3 grid items-end gap-3 md:grid-cols-6">
+                  <InputField label="Valor causa (R$)" value={uploadForm.claim_value} onChange={(value) => setUploadForm((s) => ({ ...s, claim_value: value }))} />
+                  <div className="flex justify-stretch md:col-span-5 md:justify-end">
+                    <Button
+                      onClick={() => uploadMutation.mutate()}
+                      disabled={uploadMutation.isPending || extractPreviewMutation.isPending || !uploadFile}
+                      className="h-[38px] w-full gap-2 bg-cyan-500 px-6 font-bold text-slate-950 hover:bg-cyan-400 md:w-auto"
+                    >
+                      <Upload size={16} />
+                      {extractPreviewMutation.isPending ? "Extraindo..." : uploadMutation.isPending ? "Enviando..." : "Enviar para Analise"}
+                    </Button>
+                  </div>
+                </div>
+
+                <div className="border-t border-slate-200 pt-4 dark:border-slate-800">
+                  <div className="mb-3 flex items-center justify-between gap-3">
+                    <p className="text-xs font-semibold uppercase text-slate-300">Análises AI dos seus casos</p>
+                    {isCasePollingBoosted ? (
+                      <span className="rounded-full border border-cyan-300 bg-cyan-100 px-2 py-1 text-[10px] font-bold uppercase tracking-wider text-cyan-800 dark:border-cyan-400/40 dark:bg-cyan-500/15 dark:text-cyan-200">
+                        Monitoramento intensivo ativo
+                      </span>
+                    ) : null}
+                  </div>
+                  {userCasesQuery.isLoading ? (
+                    <div className="rounded-xl border border-slate-200 bg-white px-4 py-5 text-sm text-slate-600 dark:border-slate-800 dark:bg-slate-900/40 dark:text-slate-300">
+                      Carregando status das análises...
+                    </div>
+                  ) : userCasesQuery.isError ? (
+                    <div className="rounded-xl border border-red-500/30 bg-red-950/30 px-4 py-5 text-sm text-red-200">
+                      Falha ao carregar casos: {userCasesQuery.error instanceof Error ? userCasesQuery.error.message : "erro desconhecido"}
+                    </div>
+                  ) : userCases.length === 0 ? (
+                    <div className="rounded-xl border border-slate-200 bg-white px-4 py-5 text-sm text-slate-600 dark:border-slate-800 dark:bg-slate-900/40 dark:text-slate-300">
+                      Nenhum caso enviado ainda.
+                    </div>
+                  ) : (
+                    <div className="space-y-2">
+                      {userCases.slice(0, 8).map((item) => {
+                        const statusMeta = getCaseAIStatusMeta(item.ai_status);
+                        const createdAtLabel = formatDateTimeLabel(item.created_at);
+                        const processedAtLabel = formatDateTimeLabel(item.ai_processed_at);
+                        const retryAtLabel = formatDateTimeLabel(item.ai_next_retry_at);
+                        const stageProgress = resolveCaseAIProgress(item);
+                        const stageLabel = resolveCaseAIStageLabel(item);
+                        const canReprocess = item.ai_status === "failed" || item.ai_status === "manual_review" || item.ai_status === "failed_retryable";
+                        const isReprocessingThisCase = reprocessCaseMutation.isPending && reprocessCaseMutation.variables === item.case_id;
+                        const processLabel = item.process_number?.trim() ? item.process_number : `Caso ${item.case_id.slice(0, 8)}`;
+
+                        return (
+                          <div key={item.case_id} className="rounded-xl border border-slate-200 bg-white px-4 py-3 dark:border-slate-800 dark:bg-slate-900/45">
+                            <div className="flex flex-wrap items-start justify-between gap-3">
+                              <div>
+                                <p className="text-sm font-bold text-slate-900 dark:text-slate-100">{processLabel}</p>
+                                <p className="text-[11px] text-slate-600 dark:text-slate-400">
+                                  {createdAtLabel ? `Enviado em ${createdAtLabel}` : "Data de envio indisponível"}
+                                  {processedAtLabel ? ` • Último processamento: ${processedAtLabel}` : ""}
+                                </p>
+                              </div>
+                              <div className="flex items-center gap-2">
+                                <span className={`inline-flex rounded-full border px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider ${statusMeta.badge}`}>
+                                  {statusMeta.label}
+                                </span>
+                                {canReprocess ? (
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    className="h-7 border-slate-300 bg-white px-3 text-[11px] font-bold text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-900/60 dark:text-slate-100 dark:hover:bg-slate-800"
+                                    disabled={isReprocessingThisCase}
+                                    onClick={() => reprocessCaseMutation.mutate(item.case_id)}
+                                  >
+                                    {isReprocessingThisCase ? "Reprocessando..." : "Reprocessar AI"}
+                                  </Button>
+                                ) : null}
+                              </div>
+                            </div>
+                            <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-slate-700 dark:text-slate-300">
+                              <span className="rounded-md border border-slate-300 bg-slate-100 px-2 py-0.5 dark:border-slate-700 dark:bg-slate-800/60">
+                                Êxito: {formatProbabilityPercent(item.success_probability)}
+                              </span>
+                              <span className="rounded-md border border-slate-300 bg-slate-100 px-2 py-0.5 dark:border-slate-700 dark:bg-slate-800/60">
+                                Acordo: {formatProbabilityPercent(item.settlement_probability)}
+                              </span>
+                              <span className="rounded-md border border-slate-300 bg-slate-100 px-2 py-0.5 dark:border-slate-700 dark:bg-slate-800/60">
+                                Risco: {typeof item.risk_score === "number" && Number.isFinite(item.risk_score) ? `${Math.round(item.risk_score)} / 100` : "--"}
+                              </span>
+                              <span className="rounded-md border border-slate-300 bg-slate-100 px-2 py-0.5 dark:border-slate-700 dark:bg-slate-800/60">
+                                Tentativas IA: {typeof item.ai_attempts === "number" ? item.ai_attempts : 0}
+                              </span>
+                              <span className="rounded-md border border-cyan-300 bg-cyan-100 px-2 py-0.5 text-cyan-800 dark:border-cyan-500/35 dark:bg-cyan-500/10 dark:text-cyan-200">
+                                Progresso IA: {stageProgress}%
+                              </span>
+                            </div>
+                            <p className="mt-2 text-[11px] text-slate-700 dark:text-slate-300">{stageLabel}</p>
+                            {retryAtLabel && item.ai_status === "failed_retryable" ? (
+                              <p className="mt-2 text-[11px] text-amber-700 dark:text-amber-200">Nova tentativa automática prevista para {retryAtLabel}.</p>
+                            ) : null}
+                            {item.ai_last_error ? <p className="mt-2 text-[11px] text-red-700 dark:text-red-200">Último erro: {item.ai_last_error}</p> : null}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
               </div>
             ) : (
-              <div className="space-y-2">
-                {userCases.slice(0, 8).map((item) => {
-                  const statusMeta = getCaseAIStatusMeta(item.ai_status);
-                  const createdAtLabel = formatDateTimeLabel(item.created_at);
-                  const processedAtLabel = formatDateTimeLabel(item.ai_processed_at);
-                  const retryAtLabel = formatDateTimeLabel(item.ai_next_retry_at);
-                  const stageProgress = resolveCaseAIProgress(item);
-                  const stageLabel = resolveCaseAIStageLabel(item);
-                  const canReprocess = item.ai_status === "failed" || item.ai_status === "manual_review" || item.ai_status === "failed_retryable";
-                  const isReprocessingThisCase = reprocessCaseMutation.isPending && reprocessCaseMutation.variables === item.case_id;
-                  const processLabel = item.process_number?.trim() ? item.process_number : `Caso ${item.case_id.slice(0, 8)}`;
-
-                  return (
-                    <div key={item.case_id} className="rounded-xl border border-slate-200 bg-white px-4 py-3 dark:border-slate-800 dark:bg-slate-900/45">
-                      <div className="flex flex-wrap items-start justify-between gap-3">
-                        <div>
-                          <p className="text-sm font-bold text-slate-900 dark:text-slate-100">{processLabel}</p>
-                          <p className="text-[11px] text-slate-600 dark:text-slate-400">
-                            {createdAtLabel ? `Enviado em ${createdAtLabel}` : "Data de envio indisponível"}
-                            {processedAtLabel ? ` • Último processamento: ${processedAtLabel}` : ""}
-                          </p>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <span className={`inline-flex rounded-full border px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider ${statusMeta.badge}`}>
-                            {statusMeta.label}
-                          </span>
-                          {canReprocess ? (
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              className="h-7 border-slate-300 bg-white px-3 text-[11px] font-bold text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-900/60 dark:text-slate-100 dark:hover:bg-slate-800"
-                              disabled={isReprocessingThisCase}
-                              onClick={() => reprocessCaseMutation.mutate(item.case_id)}
-                            >
-                              {isReprocessingThisCase ? "Reprocessando..." : "Reprocessar AI"}
-                            </Button>
-                          ) : null}
-                        </div>
-                      </div>
-                      <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-slate-700 dark:text-slate-300">
-                        <span className="rounded-md border border-slate-300 bg-slate-100 px-2 py-0.5 dark:border-slate-700 dark:bg-slate-800/60">
-                          Êxito: {formatProbabilityPercent(item.success_probability)}
-                        </span>
-                        <span className="rounded-md border border-slate-300 bg-slate-100 px-2 py-0.5 dark:border-slate-700 dark:bg-slate-800/60">
-                          Acordo: {formatProbabilityPercent(item.settlement_probability)}
-                        </span>
-                        <span className="rounded-md border border-slate-300 bg-slate-100 px-2 py-0.5 dark:border-slate-700 dark:bg-slate-800/60">
-                          Risco: {typeof item.risk_score === "number" && Number.isFinite(item.risk_score) ? `${Math.round(item.risk_score)} / 100` : "--"}
-                        </span>
-                        <span className="rounded-md border border-slate-300 bg-slate-100 px-2 py-0.5 dark:border-slate-700 dark:bg-slate-800/60">
-                          Tentativas IA: {typeof item.ai_attempts === "number" ? item.ai_attempts : 0}
-                        </span>
-                        <span className="rounded-md border border-cyan-300 bg-cyan-100 px-2 py-0.5 text-cyan-800 dark:border-cyan-500/35 dark:bg-cyan-500/10 dark:text-cyan-200">
-                          Progresso IA: {stageProgress}%
-                        </span>
-                      </div>
-                      <p className="mt-2 text-[11px] text-slate-700 dark:text-slate-300">{stageLabel}</p>
-                      {retryAtLabel && item.ai_status === "failed_retryable" ? (
-                        <p className="mt-2 text-[11px] text-amber-700 dark:text-amber-200">Nova tentativa automática prevista para {retryAtLabel}.</p>
-                      ) : null}
-                      {item.ai_last_error ? <p className="mt-2 text-[11px] text-red-700 dark:text-red-200">Último erro: {item.ai_last_error}</p> : null}
-                    </div>
-                  );
-                })}
+              <div
+                id="upload-processo-panel"
+                className="rounded-xl border border-dashed border-slate-700 bg-slate-950/35 px-4 py-5 text-sm text-slate-300"
+              >
+                Painel de upload recolhido. Clique em <strong>Expandir</strong> para enviar novos processos.
               </div>
             )}
-          </div>
           </section>
         )}
 
@@ -1799,6 +1945,52 @@ export default function Dashboard() {
           />
         ) : null}
 
+        {activeTab === "visao-geral" && inboxAlertDetails.length > 0 ? (
+          <section className={`${PANEL_SOFT_CLASS} mb-6 p-4`}>
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <h3 className="text-sm font-bold uppercase tracking-wide text-slate-200">Sinais do dia</h3>
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-8 border-slate-700 bg-slate-900/40 text-slate-200 hover:bg-slate-800"
+                onClick={() => setActiveTab("alertas")}
+              >
+                Abrir Alertas Estratégicos
+              </Button>
+            </div>
+            <div className="grid gap-3 md:grid-cols-3">
+              {inboxAlertDetails.slice(0, 3).map((item, idx) => (
+                <div key={`${getAlertKey(item)}::signal::${idx}`} className="rounded-lg border border-slate-700/80 bg-slate-900/40 p-3">
+                  <p className="text-xs font-bold text-slate-100">{item.title}</p>
+                  <p className="mt-1 line-clamp-2 text-[11px] text-slate-300">{item.desc}</p>
+                  <div className="mt-3 flex gap-2">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-7 border-slate-700 bg-slate-900/40 px-2 text-[11px] text-slate-200 hover:bg-slate-800"
+                      onClick={() => {
+                        setActiveTab("alertas");
+                        setForcedAlertCategoryFilter(resolveAlertCategory(item.type));
+                        setNavigationOrigin("alerta");
+                        setNavigationAlertId(item.alert_id ?? null);
+                      }}
+                    >
+                      Ver alerta
+                    </Button>
+                    <Button
+                      size="sm"
+                      className="h-7 bg-cyan-500 px-2 text-[11px] font-bold text-slate-950 hover:bg-cyan-400"
+                      onClick={() => handlePrimaryAlertAction(item)}
+                    >
+                      Ver análise relacionada
+                    </Button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </section>
+        ) : null}
+
         {dashboardQuery.isLoading && (
           <div className={`${PANEL_SOFT_CLASS} p-6 text-slate-300 sm:p-8`}>Carregando dashboard...</div>
         )}
@@ -1809,7 +2001,7 @@ export default function Dashboard() {
           </div>
         )}
 
-        {dashboardData && (
+        {dashboardData && dashboardAlertData && (
           <>
             {activeTab === "visao-geral" && (
               <VisaoGeralView
@@ -1819,20 +2011,86 @@ export default function Dashboard() {
                 onOpenCardDetail={openCardDetail}
               />
             )}
-            {activeTab === "inteligencia" && (
-              <InteligenciaView data={dashboardData} onOpenCardDetail={openCardDetail} onOpenSimilarProcess={openSimilarProcessDetail} />
-            )}
-            {activeTab === "simulacoes" && (
-              <SimulacoesView
-                data={dashboardData}
-                onOpenCardDetail={openCardDetail}
-                focusedScenarioTitle={focusedSimulationScenario}
-                isDemoMode={isDemoMode}
-              />
+            {(activeTab === "inteligencia" || activeTab === "simulacoes") && (
+              <div className="grid gap-4 xl:grid-cols-[280px_minmax(0,1fr)] xl:items-start">
+                <aside
+                  className={`${PANEL_SOFT_CLASS} order-1 border-slate-200 bg-white/95 shadow-[0_16px_38px_rgba(15,23,42,0.12)] dark:border-cyan-500/20 dark:bg-[linear-gradient(160deg,rgba(6,26,58,0.85)_0%,rgba(5,15,38,0.85)_100%)] dark:shadow-[0_14px_30px_rgba(2,6,23,0.35)] p-4 xl:sticky xl:top-20`}
+                >
+                  <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                    <p className="text-[11px] font-bold uppercase tracking-[0.12em] text-cyan-700 dark:text-cyan-200">Módulos de Inteligência Estratégica</p>
+                    <span className="rounded-full border border-cyan-300 bg-cyan-50 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide text-cyan-700 dark:border-cyan-400/35 dark:bg-cyan-500/15 dark:text-cyan-100">
+                      4 módulos
+                    </span>
+                  </div>
+                  <nav className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-1">
+                    <TabButton
+                      active={strategicModule === "analise-decisoes"}
+                      onClick={() => setStrategicModule("analise-decisoes")}
+                      icon={<BrainCircuit size={15} />}
+                      text="Análise de Decisões"
+                      variant="strategic-sidebar"
+                    />
+                    <TabButton
+                      active={strategicModule === "simulacoes-avancadas"}
+                      onClick={() => setStrategicModule("simulacoes-avancadas")}
+                      icon={<ActivitySquare size={15} />}
+                      text="Simulações Avançadas"
+                      variant="strategic-sidebar"
+                    />
+                    <TabButton
+                      active={strategicModule === "gemeo-digital"}
+                      onClick={() => setStrategicModule("gemeo-digital")}
+                      icon={<Database size={15} />}
+                      text="Gêmeo Digital"
+                      variant="strategic-sidebar"
+                    />
+                    <TabButton
+                      active={strategicModule === "acoes-rescisorias"}
+                      onClick={() => setStrategicModule("acoes-rescisorias")}
+                      icon={<Scale size={15} />}
+                      text="Ações Rescisórias"
+                      variant="strategic-sidebar"
+                    />
+                  </nav>
+                  <div className="mt-3 rounded-lg border border-slate-200 bg-slate-100 px-3 py-2 text-xs text-slate-700 dark:border-cyan-500/25 dark:bg-slate-950/55 dark:text-slate-200">
+                    Módulo ativo: <strong>{resolveStrategicModuleLabel(strategicModule)}</strong>
+                    {navigationCaseId ? ` • Caso de referência: ${navigationCaseId.slice(0, 8)}...` : ""}
+                    {typeof highlightedRescisoriaScore === "number" ? ` • Score: ${highlightedRescisoriaScore}/100` : ""}
+                    {navigationOrigin ? ` • Origem: ${navigationOrigin}` : ""}
+                  </div>
+                </aside>
+
+                <div className="order-2 min-w-0 space-y-4">
+                  {strategicModule === "analise-decisoes" ? (
+                    <InteligenciaView data={dashboardData} onOpenCardDetail={openCardDetail} onOpenSimilarProcess={openSimilarProcessDetail} />
+                  ) : null}
+                  {strategicModule === "simulacoes-avancadas" ? (
+                    <SimulacoesView
+                      data={dashboardData}
+                      onOpenCardDetail={openCardDetail}
+                      focusedScenarioTitle={focusedSimulationScenario}
+                      isDemoMode={isDemoMode}
+                    />
+                  ) : null}
+                  {strategicModule === "gemeo-digital" ? (
+                    <GemeoDigitalView data={dashboardData} onOpenCardDetail={openCardDetail} />
+                  ) : null}
+                  {strategicModule === "acoes-rescisorias" ? (
+                    <AcoesRescisoriasView
+                      data={dashboardData}
+                      highlightedCaseId={navigationCaseId}
+                      onOpenFromCandidate={(caseId) => {
+                        setNavigationCaseId(caseId);
+                        setNavigationOrigin((prev) => prev ?? "inteligencia");
+                      }}
+                    />
+                  ) : null}
+                </div>
+              </div>
             )}
             {activeTab === "alertas" && (
               <AlertasView
-                data={dashboardData}
+                data={dashboardAlertData}
                 dismissedAlerts={dismissedAlerts}
                 getAlertKey={getAlertKey}
                 onViewAlert={handleViewAlert}
@@ -1840,6 +2098,8 @@ export default function Dashboard() {
                 onDismissAlert={handleDismissAlert}
                 onPrimaryAlertAction={handlePrimaryAlertAction}
                 onOpenCardDetail={openCardDetail}
+                forcedCategoryFilter={forcedAlertCategoryFilter}
+                onForcedCategoryApplied={() => setForcedAlertCategoryFilter(null)}
               />
             )}
             {activeTab === "historico-uploads" && (
@@ -1851,6 +2111,12 @@ export default function Dashboard() {
                 onReprocessCase={(caseId: string) => reprocessCaseMutation.mutate(caseId)}
                 isReprocessingCaseId={reprocessCaseMutation.isPending ? reprocessCaseMutation.variables : null}
                 onOpenCompleteAnalysis={(item) => setSelectedHistoryCase(item)}
+                onOpenRescisoriaCase={(caseId) => {
+                  setActiveTab("inteligencia");
+                  setStrategicModule("acoes-rescisorias");
+                  setNavigationOrigin("historico");
+                  setNavigationCaseId(caseId);
+                }}
               />
             )}
           </>
@@ -2442,6 +2708,138 @@ function SimulacoesView({
   );
 }
 
+function GemeoDigitalView({
+  data,
+  onOpenCardDetail,
+}: {
+  data: DashboardData;
+  onOpenCardDetail: (detail: CardDetail) => void;
+}) {
+  return (
+    <div className="animate-in fade-in slide-in-from-bottom-4 duration-500 space-y-6">
+      <div className={`${PANEL_CLASS} p-6`}>
+        <div className="mb-3 flex items-center gap-2 text-slate-100">
+          <Database size={20} className="text-cyan-300" />
+          <h3 className="text-lg font-bold">Gêmeo Digital</h3>
+        </div>
+        <p className="text-sm leading-relaxed text-slate-300">{data.simulacoes.description}</p>
+      </div>
+
+      <div className="grid gap-4 md:grid-cols-3">
+        {data.simulacoes.scenarios.map((scenario) => (
+          <button
+            key={scenario.title}
+            type="button"
+            className={`${PANEL_SOFT_CLASS} p-4 text-left transition-colors hover:border-cyan-500/40`}
+            onClick={() =>
+              onOpenCardDetail({
+                title: scenario.title,
+                description: scenario.footer,
+                lines: scenario.data.map((entry) => `${entry.label}: ${entry.val}`),
+                targetTab: "inteligencia",
+                targetModule: "simulacoes-avancadas",
+                targetScenarioTitle: scenario.title,
+              })
+            }
+          >
+            <p className="text-xs font-bold uppercase tracking-wide text-cyan-200">{scenario.tag}</p>
+            <p className="mt-1 text-sm font-bold text-slate-100">{scenario.title}</p>
+            <p className="mt-2 text-xs text-slate-300">{scenario.footer}</p>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function AcoesRescisoriasView({
+  data,
+  highlightedCaseId,
+  onOpenFromCandidate,
+}: {
+  data: DashboardData;
+  highlightedCaseId: string | null;
+  onOpenFromCandidate: (caseId: string) => void;
+}) {
+  const module = data.inteligencia.acoes_rescisorias;
+  return (
+    <div className="animate-in fade-in slide-in-from-bottom-4 duration-500 space-y-6">
+      <div className={`${PANEL_CLASS} p-6`}>
+        <div className="mb-2 flex items-center gap-2 text-slate-100">
+          <Scale size={20} className="text-emerald-300" />
+          <h3 className="text-lg font-bold">Ações Rescisórias</h3>
+        </div>
+        <p className="text-sm leading-relaxed text-slate-300">{module.summary}</p>
+        <p className="mt-2 text-xs text-slate-400">
+          Ferramenta de reversão de decisões transitadas em julgado com análise probabilística e financeira.
+        </p>
+      </div>
+
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        {module.kpis.map((kpi, idx) => (
+          <div key={`${kpi.label}-${idx}`} className={`${PANEL_SOFT_CLASS} p-4`}>
+            <p className="text-[11px] font-bold uppercase tracking-wide text-slate-300">{kpi.label}</p>
+            <p className="mt-2 text-3xl font-black text-slate-100">{kpi.value}</p>
+          </div>
+        ))}
+      </div>
+
+      <div className={`${PANEL_CLASS} p-5`}>
+        <h4 className="text-sm font-bold uppercase tracking-wide text-slate-200">Casos priorizados</h4>
+        <div className="mt-4 space-y-3">
+          {module.candidates.length === 0 ? (
+            <div className={`${PANEL_SOFT_CLASS} p-4 text-sm text-slate-300`}>Nenhum caso com potencial rescisório no recorte atual.</div>
+          ) : (
+            module.candidates.map((candidate) => {
+              const highlighted = highlightedCaseId === candidate.case_id;
+              const eligibilityTone =
+                candidate.eligibility_status === "eligible"
+                  ? "text-emerald-700 bg-emerald-100 border-emerald-300 dark:text-emerald-200 dark:bg-emerald-500/15 dark:border-emerald-500/30"
+                  : candidate.eligibility_status === "uncertain"
+                    ? "text-amber-700 bg-amber-100 border-amber-300 dark:text-amber-200 dark:bg-amber-500/15 dark:border-amber-500/30"
+                    : "text-red-700 bg-red-100 border-red-300 dark:text-red-200 dark:bg-red-500/15 dark:border-red-500/30";
+
+              return (
+                <div
+                  key={candidate.case_id}
+                  className={`rounded-xl border p-4 ${highlighted ? "border-cyan-400 bg-cyan-500/10" : "border-slate-700 bg-slate-900/35"}`}
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <p className="text-sm font-bold text-slate-100">{candidate.process_number}</p>
+                    <span className={`inline-flex rounded-full border px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide ${eligibilityTone}`}>
+                      {candidate.eligibility_status}
+                    </span>
+                  </div>
+                  <div className="mt-2 flex flex-wrap gap-2 text-[11px]">
+                    <span className="rounded-md border border-slate-600 bg-slate-900/50 px-2 py-0.5 text-slate-200">Score: {candidate.viability_score}/100</span>
+                    <span className="rounded-md border border-slate-600 bg-slate-900/50 px-2 py-0.5 text-slate-200">Recomendação: {candidate.recommendation}</span>
+                    <span className="rounded-md border border-slate-600 bg-slate-900/50 px-2 py-0.5 text-slate-200">
+                      Líquido proj.: {formatCurrencyBRL(candidate.financial_projection.projected_net_brl)}
+                    </span>
+                  </div>
+                  {candidate.grounds_detected.length > 0 ? (
+                    <p className="mt-2 text-xs text-slate-300">Fundamentos: {candidate.grounds_detected.join(" • ")}</p>
+                  ) : null}
+                  <div className="mt-3">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-8 border-cyan-400/40 bg-cyan-500/10 text-cyan-100 hover:bg-cyan-500/20"
+                      onClick={() => onOpenFromCandidate(candidate.case_id)}
+                    >
+                      Focar neste caso
+                    </Button>
+                  </div>
+                </div>
+              );
+            })
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function UploadHistoryView({
   items,
   isLoading,
@@ -2450,6 +2848,7 @@ function UploadHistoryView({
   onReprocessCase,
   isReprocessingCaseId,
   onOpenCompleteAnalysis,
+  onOpenRescisoriaCase,
 }: {
   items: UploadHistoryItem[];
   isLoading: boolean;
@@ -2458,6 +2857,7 @@ function UploadHistoryView({
   onReprocessCase: (caseId: string) => void;
   isReprocessingCaseId: string | null;
   onOpenCompleteAnalysis: (item: UploadHistoryItem) => void;
+  onOpenRescisoriaCase: (caseId: string) => void;
 }) {
   const [searchTerm, setSearchTerm] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | "in_flight" | "completed" | "failed">("all");
@@ -2610,6 +3010,8 @@ function UploadHistoryView({
               item.generated_data?.complexity_score,
               item.generated_data?.expected_decision_months,
             ].filter((value) => typeof value === "number" && Number.isFinite(value)).length;
+            const rescisoria = item.generated_data?.rescisoria;
+            const isRescisoriaCandidate = typeof rescisoria?.viability_score === "number" && rescisoria.viability_score >= 70;
 
             return (
               <article
@@ -2630,6 +3032,11 @@ function UploadHistoryView({
                     <span className={`inline-flex rounded-full border px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider ${statusMeta.badge}`}>
                       {statusMeta.label}
                     </span>
+                    {isRescisoriaCandidate ? (
+                      <span className="inline-flex rounded-full border border-emerald-300 bg-emerald-100 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-emerald-800 dark:border-emerald-500/40 dark:bg-emerald-500/15 dark:text-emerald-200">
+                        Potencial Rescisório
+                      </span>
+                    ) : null}
                     {canReprocess ? (
                       <Button
                         size="sm"
@@ -2734,6 +3141,19 @@ function UploadHistoryView({
                 ) : null}
 
                 <div className="mt-4 flex justify-end">
+                  {isRescisoriaCandidate ? (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="mr-2 h-8 border-emerald-300 bg-emerald-50 px-3 text-[11px] font-bold text-emerald-800 hover:bg-emerald-100 dark:border-emerald-500/40 dark:bg-emerald-500/10 dark:text-emerald-100 dark:hover:bg-emerald-500/20"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onOpenRescisoriaCase(item.case_id);
+                      }}
+                    >
+                      Abrir Ações Rescisórias deste caso
+                    </Button>
+                  ) : null}
                   <Button
                     type="button"
                     variant="outline"
@@ -2915,6 +3335,8 @@ function AlertasView({
   onDismissAlert,
   onPrimaryAlertAction,
   onOpenCardDetail,
+  forcedCategoryFilter,
+  onForcedCategoryApplied,
 }: {
   data: DashboardData & { alertas: { counts: DashboardData["alertas"]["counts"]; details: DashboardAlertItem[] } };
   dismissedAlerts: string[];
@@ -2922,8 +3344,10 @@ function AlertasView({
   onViewAlert: (item: DashboardAlertItem) => void;
   onResolveAlert: (item: DashboardAlertItem) => void;
   onDismissAlert: (item: DashboardAlertItem) => void;
-  onPrimaryAlertAction: (item: { type: string; title: string }) => void;
+  onPrimaryAlertAction: (item: DashboardAlertItem) => void;
   onOpenCardDetail: (detail: CardDetail) => void;
+  forcedCategoryFilter: AlertCategory | null;
+  onForcedCategoryApplied: () => void;
 }) {
   const resolveAlertCategory = (type: string): AlertCategory => {
     const normalized = type.toLowerCase().trim();
@@ -2935,6 +3359,11 @@ function AlertasView({
   };
 
   const [activeCategoryFilter, setActiveCategoryFilter] = useState<AlertCategory | null>(null);
+  useEffect(() => {
+    if (!forcedCategoryFilter) return;
+    setActiveCategoryFilter(forcedCategoryFilter);
+    onForcedCategoryApplied();
+  }, [forcedCategoryFilter, onForcedCategoryApplied]);
   const visibleAlerts = data.alertas.details.filter((item) => !dismissedAlerts.includes(getAlertKey(item)));
   const counters: Record<AlertCategory, number> = {
     critical: 0,
@@ -3257,22 +3686,34 @@ function HeatmapLegend({ color, text }: any) {
   );
 }
 
+function formatBenchmarkMetricValue(value: unknown, unit: unknown): string {
+  const valueText = typeof value === "number" ? String(value) : String(value ?? "").trim();
+  const unitText = String(unit ?? "").trim();
+  if (!unitText || !valueText) return valueText;
+
+  if (valueText.toLowerCase().endsWith(unitText.toLowerCase())) {
+    return valueText;
+  }
+
+  const attachWithoutSpace = unitText === "%" || unitText.startsWith("%") || unitText.startsWith("°") || unitText === "x";
+  return attachWithoutSpace ? `${valueText}${unitText}` : `${valueText} ${unitText}`;
+}
+
 function BenchmarkStat({ label, user, market, trend, trendColor, unit = "", onClick }: any) {
   const tone = trendTone(trendColor);
+  const userValue = formatBenchmarkMetricValue(user, unit);
+  const marketValue = formatBenchmarkMetricValue(market, unit);
   return (
     <button type="button" onClick={onClick} className="text-left md:text-center hover:opacity-95 transition-opacity">
       <p className="text-[10px] text-slate-300 font-bold uppercase tracking-widest mb-6">{label}</p>
       <div className="mb-4 flex flex-wrap items-center justify-center gap-4 sm:gap-8">
         <div>
-          <div className="text-3xl font-black text-cyan-300 mb-1">{user}</div>
+          <div className="mb-1 whitespace-nowrap text-3xl font-black text-cyan-300">{userValue}</div>
           <p className="text-[9px] font-bold text-slate-300 uppercase">Seu Escritorio</p>
         </div>
         <div className="text-slate-300 font-light text-xl">vs</div>
         <div>
-          <div className="text-3xl font-black text-slate-100 mb-1">
-            {market}
-            {unit}
-          </div>
+          <div className="mb-1 whitespace-nowrap text-3xl font-black text-slate-100">{marketValue}</div>
           <p className="text-[9px] font-bold text-slate-300 uppercase">Mercado</p>
         </div>
       </div>
@@ -3455,18 +3896,45 @@ function ScoreCardCircle({ title, value, icon, color, onClick }: any) {
   );
 }
 
-function TabButton({ active, icon, text, onClick, badgeCount = 0 }: any) {
+function TabButton({ active, icon, text, onClick, badgeCount = 0, variant = "default" }: any) {
+  const isStrategic = variant === "strategic" || variant === "strategic-sidebar";
+  const isStrategicSidebar = variant === "strategic-sidebar";
   return (
     <button
+      type="button"
       onClick={onClick}
-      className={`flex min-h-[40px] w-full items-center justify-center gap-2 rounded-md px-3 py-2 text-[12px] font-medium leading-tight transition-all sm:text-[13px] lg:w-auto lg:min-h-[36px] lg:flex-none lg:whitespace-nowrap ${
-        active ? "bg-blue-600 text-white shadow-sm" : "text-slate-700 hover:bg-slate-200 hover:text-slate-900 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-white"
+      className={`flex w-full items-center justify-center gap-2 rounded-md px-3 text-[12px] font-medium leading-tight transition-all sm:text-[13px] ${
+        isStrategic
+          ? isStrategicSidebar
+            ? "min-h-[48px] border py-2.5"
+            : "min-h-[46px] border lg:w-full"
+          : "min-h-[40px] py-2 lg:w-auto lg:min-h-[36px] lg:flex-none lg:whitespace-nowrap"
+      } ${
+        active
+          ? isStrategic
+            ? isStrategicSidebar
+              ? "justify-start border-cyan-300/70 bg-gradient-to-r from-cyan-500 to-blue-500 px-3.5 text-left text-white shadow-[0_10px_28px_rgba(8,145,178,0.35)] ring-1 ring-cyan-300/45"
+              : "border-cyan-300/70 bg-gradient-to-r from-cyan-500 to-blue-500 text-white shadow-[0_10px_28px_rgba(8,145,178,0.35)] ring-1 ring-cyan-300/45"
+            : "bg-blue-600 text-white shadow-sm"
+          : isStrategic
+            ? isStrategicSidebar
+              ? "justify-start border-slate-300 bg-white px-3.5 py-2.5 text-left text-slate-800 hover:border-cyan-400/60 hover:bg-cyan-50 hover:text-slate-900 dark:border-slate-700/80 dark:bg-slate-950/45 dark:text-slate-100 dark:hover:border-cyan-500/35 dark:hover:bg-slate-900/75 dark:hover:text-cyan-100"
+              : "border-slate-300 bg-white py-2.5 text-slate-800 hover:border-cyan-400/60 hover:bg-cyan-50 hover:text-slate-900 dark:border-slate-700/80 dark:bg-slate-950/45 dark:text-slate-100 dark:hover:border-cyan-500/35 dark:hover:bg-slate-900/75 dark:hover:text-cyan-100"
+            : "text-slate-700 hover:bg-slate-200 hover:text-slate-900 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-white"
       }`}
     >
-      {icon}
-      {text}
+      <span className={isStrategic && !active ? "text-cyan-700 dark:text-cyan-300" : ""}>{icon}</span>
+      <span className={isStrategic ? `font-semibold tracking-[0.01em] ${isStrategicSidebar ? "text-left" : ""}` : ""}>{text}</span>
       {badgeCount > 0 ? (
-        <span className="inline-flex min-w-5 items-center justify-center rounded-full border border-cyan-300/35 bg-cyan-500/25 px-1.5 py-0.5 text-[10px] font-black text-cyan-100">
+        <span
+          className={`inline-flex min-w-5 items-center justify-center rounded-full border px-1.5 py-0.5 text-[10px] font-black ${
+            isStrategic
+              ? active
+                ? "border-white/40 bg-white/20 text-white"
+                : "border-cyan-300 bg-cyan-50 text-cyan-700 dark:border-cyan-300/35 dark:bg-cyan-500/20 dark:text-cyan-100"
+              : "border-cyan-300/35 bg-cyan-500/25 text-cyan-100"
+          }`}
+        >
           {badgeCount > 99 ? "99+" : badgeCount}
         </span>
       ) : null}
