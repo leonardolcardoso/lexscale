@@ -19,6 +19,7 @@ from backend.schemas.dashboard import (
     AlertCountData,
     AlertasData,
     BenchmarkData,
+    CaseContextData,
     CriticalDeadline,
     DashboardData,
     DashboardFiltersData,
@@ -496,6 +497,12 @@ def _generate_ai_narratives(
         "Receberá métricas agregadas anonimizadas. "
         "Responda SOMENTE JSON válido, sem markdown."
     )
+    perspective_rules = ""
+    if context.get("perspective") and context.get("success_interpretation"):
+        perspective_rules = (
+            "\n- Há uma perspectiva do usuário no contexto (perspective_label e success_interpretation). "
+            "Ao falar de êxito ou probabilidade de sucesso, use explicitamente 'favorável a você' ou 'favorável à contraparte' conforme a interpretação."
+        )
     user_prompt = (
         "Use apenas os dados a seguir para gerar interpretações.\n"
         "Retorne JSON com este formato exato:\n"
@@ -508,7 +515,9 @@ def _generate_ai_narratives(
         "- Escreva em pt-BR objetivo.\n"
         "- No máximo 3 insights.\n"
         "- Não invente fontes nem números fora do contexto.\n"
-        "- Não cite nomes de pessoas.\n\n"
+        "- Não cite nomes de pessoas."
+        + perspective_rules
+        + "\n\n"
         f"Contexto: {json.dumps(context, ensure_ascii=True)}"
     )
 
@@ -567,6 +576,7 @@ def build_dashboard_data(
     faixa_valor: str = "Todos os Valores",
     periodo: str = "Últimos 6 meses",
     ai_client: Optional[OpenAI] = None,
+    case_context: Optional[CaseContextData] = None,
 ) -> DashboardData:
     all_user_cases = (
         db.query(ProcessCase)
@@ -732,6 +742,14 @@ def build_dashboard_data(
             "public_actions": _top_terms([_action_category(item.action_type) for item in filtered_public]),
         },
     }
+    if case_context and case_context.user_party:
+        ai_context["perspective"] = case_context.user_party
+        ai_context["perspective_label"] = "Autor" if case_context.user_party == "author" else "Réu"
+        ai_context["success_interpretation"] = (
+            "success_rate é a taxa de êxito do AUTOR da ação. "
+            f"O usuário está como {ai_context['perspective_label']}: nos insights e nas notas de cenário, "
+            "quando falar de probabilidade de êxito, use 'favorável a você' ou 'favorável à contraparte' para deixar claro a quem o resultado beneficia."
+        )
     enable_ai_narratives = os.getenv("DASHBOARD_ENABLE_AI_NARRATIVES", "0").strip().lower() in {"1", "true", "yes", "on"}
     ai_narratives = (
         _generate_ai_narratives(
@@ -770,6 +788,21 @@ def build_dashboard_data(
     settlement_value_text = _pct(settlement_rate) if settlement_values else "N/D"
     months_value_text = f"~{avg_months:.1f} meses" if months_values else "N/D"
 
+    user_party_val = case_context.user_party if case_context else None
+    favorable_to_user_pct: Optional[str] = None
+    favorable_to_counterparty_pct: Optional[str] = None
+    if user_party_val and success_values:
+        if user_party_val == "author":
+            favorable_to_user_pct = _pct(success_rate)
+            favorable_to_counterparty_pct = _pct(1.0 - success_rate)
+        else:
+            favorable_to_user_pct = _pct(1.0 - success_rate)
+            favorable_to_counterparty_pct = _pct(success_rate)
+
+    acordo_footer = f"Baseado em {settlement_sample_count} eventos de acordo identificados."
+    if case_context:
+        acordo_footer += " Chance de resolução por acordo; não indica favorabilidade entre as partes."
+
     visao_geral = VisaoGeralData(
         stats=[
             MetricCardData(
@@ -784,6 +817,8 @@ def build_dashboard_data(
                 footer=f"Baseado em {success_sample_count} observações com desfecho válido (usuário + público).",
                 color="blue",
                 updated=datetime.now().strftime("Atualizado em %d/%m/%Y às %H:%M"),
+                value_favorable_to_user=favorable_to_user_pct,
+                value_favorable_to_counterparty=favorable_to_counterparty_pct,
             ),
             MetricCardData(
                 title="Probabilidade de Acordo",
@@ -794,7 +829,7 @@ def build_dashboard_data(
                     if settlement_values
                     else "Sem amostra suficiente para calcular acordo."
                 ),
-                footer=f"Baseado em {settlement_sample_count} eventos de acordo identificados.",
+                footer=acordo_footer,
                 color="blue",
                 updated=datetime.now().strftime("Atualizado em %d/%m/%Y às %H:%M"),
             ),
@@ -910,6 +945,17 @@ def build_dashboard_data(
     note_b = str(scenario_notes.get("B") or f"Projeção com base em {projection_sample_count} observações válidas do recorte.")
     note_c = str(scenario_notes.get("C") or f"Projeção com base em {projection_sample_count} observações válidas do recorte.")
 
+    def _scenario_favorable(success: float) -> Tuple[Optional[str], Optional[str]]:
+        if not case_context or not case_context.user_party or not has_projection_base:
+            return None, None
+        if case_context.user_party == "author":
+            return _pct(success), _pct(1.0 - success)
+        return _pct(1.0 - success), _pct(success)
+
+    s_a_user, s_a_counter = _scenario_favorable(scenario_a_success)
+    s_b_user, s_b_counter = _scenario_favorable(scenario_b_success)
+    s_c_user, s_c_counter = _scenario_favorable(scenario_c_success)
+
     simulacoes = SimulacaoData(
         description=(
             "Cenários estimados por IA com cruzamento entre dados do usuário, base pública e contexto global anônimo do banco."
@@ -922,7 +968,13 @@ def build_dashboard_data(
                 tag="RECOMENDADO",
                 tag_color="emerald",
                 data=[
-                    ScenarioItemData(label="Probabilidade de Sucesso", val=_pct(scenario_a_success) if has_projection_base else "N/D", color="emerald"),
+                    ScenarioItemData(
+                        label="Probabilidade de Sucesso",
+                        val=_pct(scenario_a_success) if has_projection_base else "N/D",
+                        color="emerald",
+                        value_favorable_to_user=s_a_user,
+                        value_favorable_to_counterparty=s_a_counter,
+                    ),
                     ScenarioItemData(label="Valor Estimado", val=(f"R$ {scenario_a_value:,.0f}".replace(",", ".") if scenario_a_value else "N/D")),
                     ScenarioItemData(label="Tempo Estimado", val=(f"{scenario_a_months:.1f} meses" if scenario_a_months else "N/D")),
                     ScenarioItemData(label="Nível de Risco", val=(f"{scenario_a_risk:.0f}%" if has_projection_base else "N/D"), color="emerald"),
@@ -934,7 +986,13 @@ def build_dashboard_data(
                 tag="EQUILIBRADO",
                 tag_color="blue",
                 data=[
-                    ScenarioItemData(label="Probabilidade de Sucesso", val=_pct(scenario_b_success) if has_projection_base else "N/D", color="emerald"),
+                    ScenarioItemData(
+                        label="Probabilidade de Sucesso",
+                        val=_pct(scenario_b_success) if has_projection_base else "N/D",
+                        color="emerald",
+                        value_favorable_to_user=s_b_user,
+                        value_favorable_to_counterparty=s_b_counter,
+                    ),
                     ScenarioItemData(label="Valor Estimado", val=(f"R$ {scenario_b_value:,.0f}".replace(",", ".") if scenario_b_value else "N/D")),
                     ScenarioItemData(label="Tempo Estimado", val=(f"{scenario_b_months:.1f} meses" if scenario_b_months else "N/D")),
                     ScenarioItemData(label="Nível de Risco", val=(f"{scenario_b_risk:.0f}%" if has_projection_base else "N/D"), color="orange"),
@@ -946,7 +1004,13 @@ def build_dashboard_data(
                 tag="ALTERNATIVA",
                 tag_color="orange",
                 data=[
-                    ScenarioItemData(label="Probabilidade de Sucesso", val=_pct(scenario_c_success) if has_projection_base else "N/D", color="orange"),
+                    ScenarioItemData(
+                        label="Probabilidade de Sucesso",
+                        val=_pct(scenario_c_success) if has_projection_base else "N/D",
+                        color="orange",
+                        value_favorable_to_user=s_c_user,
+                        value_favorable_to_counterparty=s_c_counter,
+                    ),
                     ScenarioItemData(label="Valor Estimado", val=(f"R$ {scenario_c_value:,.0f}".replace(",", ".") if scenario_c_value else "N/D")),
                     ScenarioItemData(label="Tempo Estimado", val=(f"{scenario_c_months:.1f} meses" if scenario_c_months else "N/D")),
                     ScenarioItemData(label="Nível de Risco", val=(f"{scenario_c_risk:.0f}%" if has_projection_base else "N/D"), color="blue"),
@@ -1065,4 +1129,5 @@ def build_dashboard_data(
         simulacoes=simulacoes,
         alertas=alertas,
         generated_at=datetime.now(timezone.utc),
+        case_context=case_context,
     )

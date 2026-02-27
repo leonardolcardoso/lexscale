@@ -100,6 +100,9 @@ def init_database() -> None:
             connection.execute(
                 text("ALTER TABLE IF EXISTS process_cases ADD COLUMN IF NOT EXISTS ai_processed_at TIMESTAMPTZ"),
             )
+            connection.execute(
+                text("ALTER TABLE IF EXISTS process_cases ADD COLUMN IF NOT EXISTS user_party TEXT"),
+            )
             if allow_data_migrations:
                 connection.execute(
                     text("UPDATE process_cases SET ai_status = COALESCE(ai_status, 'queued')"),

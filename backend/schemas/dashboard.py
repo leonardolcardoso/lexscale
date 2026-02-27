@@ -1,7 +1,14 @@
 from datetime import datetime
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 from pydantic import BaseModel, Field
+
+
+class CaseContextData(BaseModel):
+    case_id: str
+    process_number: str
+    case_title: Optional[str] = None
+    user_party: Optional[Literal["author", "defendant"]] = None
 
 
 class MetricCardData(BaseModel):
@@ -12,6 +19,8 @@ class MetricCardData(BaseModel):
     color: str
     updated: Optional[str] = None
     warning: Optional[str] = None
+    value_favorable_to_user: Optional[str] = None
+    value_favorable_to_counterparty: Optional[str] = None
 
 
 class ScoreCardData(BaseModel):
@@ -69,6 +78,8 @@ class ScenarioItemData(BaseModel):
     label: str
     val: str
     color: Optional[str] = None
+    value_favorable_to_user: Optional[str] = None
+    value_favorable_to_counterparty: Optional[str] = None
 
 
 class ScenarioData(BaseModel):
@@ -181,3 +192,4 @@ class DashboardData(BaseModel):
     simulacoes: SimulacaoData
     alertas: AlertasData
     generated_at: datetime
+    case_context: Optional[CaseContextData] = None

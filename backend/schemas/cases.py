@@ -120,11 +120,14 @@ class UploadHistoryGeneratedData(BaseModel):
     complexity_score: Optional[float] = None
     ai_summary: Optional[str] = None
     rescisoria: Optional[RescisoriaAnalysisPayload] = None
+    favorable_to_user_pct: Optional[float] = None  # êxito favorável ao usuário (0-100)
+    favorable_to_counterparty_pct: Optional[float] = None  # êxito favorável à contraparte (0-100)
 
 
 class UploadHistoryItem(BaseModel):
     case_id: str
     process_number: str
+    user_party: Optional[str] = None  # "author" | "defendant"
     case_title: Optional[str] = None
     filename: Optional[str] = None
     content_type: Optional[str] = None

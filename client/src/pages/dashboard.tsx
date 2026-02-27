@@ -80,7 +80,10 @@ const EMPTY_UPLOAD_FORM = {
   judge: "",
   action_type: "",
   claim_value: "",
+  user_party: "" as "" | "author" | "defendant",
 };
+
+const UPLOAD_FORM_LABEL = "block min-h-[1.25rem] text-xs font-semibold uppercase tracking-wide text-slate-300";
 
 type DashboardTab = "visao-geral" | "inteligencia" | "simulacoes" | "alertas" | "historico-uploads";
 type StrategicModule = "analise-decisoes" | "simulacoes-avancadas" | "gemeo-digital" | "acoes-rescisorias";
@@ -177,6 +180,14 @@ type StrategicAlertListResponse = {
 };
 
 type ProcessingProgressTone = "processing" | "success" | "warning";
+type LeadingSide = "user" | "counterparty" | "balanced";
+
+type FavorabilitySummary = {
+  userPct: number;
+  counterpartyPct: number;
+  leadingSide: LeadingSide;
+  spread: number;
+};
 
 function parsePercentValue(raw: string, fallback = 70): number {
   const numeric = Number(raw.replace("%", "").replace(",", ".").trim());
@@ -200,6 +211,21 @@ function resolveValueRangeLabel(faixaValor: string): string {
 
 function normalizeSearchText(value: string): string {
   return value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+}
+
+function resolveLatestProcessNumber(items: Array<{ process_number?: string | null; created_at?: string | null }>): string | null {
+  const ordered = [...items].sort((a, b) => {
+    const aTime = a.created_at ? new Date(a.created_at).getTime() : 0;
+    const bTime = b.created_at ? new Date(b.created_at).getTime() : 0;
+    return bTime - aTime;
+  });
+
+  for (const item of ordered) {
+    const processNumber = item.process_number?.trim();
+    if (processNumber) return processNumber;
+  }
+
+  return null;
 }
 
 function resolveRiskTone(level: "baixo" | "medio" | "alto") {
@@ -393,6 +419,13 @@ function resolveScenarioFromMetric(title: string): string | undefined {
 
 function buildScenarioDetail(scenario: SimulationScenarioSource, isDemoMode: boolean): CardDetail {
   const titleKey = normalizeSearchText(scenario.title);
+  const scenarioFavorability = scenario.data.reduce((found: FavorabilitySummary | null, item) => {
+    if (found) return found;
+    return resolveFavorabilitySummary({
+      favorableToUser: item.value_favorable_to_user,
+      favorableToCounterparty: item.value_favorable_to_counterparty,
+    });
+  }, null);
   const defaultNextStep = titleKey.includes("acordo")
     ? "Consolidar proposta objetiva e checklist de concessões para abrir negociação ainda antes da audiência."
     : titleKey.includes("julgamento")
@@ -402,7 +435,13 @@ function buildScenarioDetail(scenario: SimulationScenarioSource, isDemoMode: boo
   return {
     title: "Cenário",
     description: scenario.detail_summary || scenario.title,
-    lines: [...scenario.data.map((item) => `${item.label}: ${item.val}`), scenario.footer],
+    lines: [
+      ...(scenarioFavorability
+        ? [`${resolveLeadingLabel(scenarioFavorability)} (${formatPercentLabel(scenarioFavorability.userPct)} x ${formatPercentLabel(scenarioFavorability.counterpartyPct)})`]
+        : []),
+      ...scenario.data.map((item) => `${item.label}: ${item.val}`),
+      scenario.footer,
+    ],
     variant: "scenario",
     badgeLabel: scenario.detail_title || "Detalhes",
     recommendationTitle: scenario.next_step_title || "Próximo passo recomendado:",
@@ -518,8 +557,9 @@ async function deleteCase(caseId: string): Promise<void> {
     credentials: "include",
   });
   if (!res.ok) {
-    const msg = await parseApiErrorResponse(res).catch(() => "Não foi possível excluir este upload.");
-    throw mapNetworkError(new Error(msg), msg);
+    const parsedError = await parseApiErrorResponse(res).catch(() => "Não foi possível excluir este upload.");
+    const message = typeof parsedError === "string" ? parsedError : parsedError.message || "Não foi possível excluir este upload.";
+    throw mapNetworkError(new Error(message), message);
   }
 }
 
@@ -610,6 +650,101 @@ function formatCurrencyBRL(value?: number | null): string {
     currency: "BRL",
     maximumFractionDigits: 2,
   }).format(value);
+}
+
+function toPercentageValue(value: string | number | null | undefined): number | null {
+  if (value == null) return null;
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) return null;
+    return Math.max(0, Math.min(100, value <= 1 ? value * 100 : value));
+  }
+  if (typeof value === "string") {
+    const cleaned = value.replace("%", "").replace(",", ".").trim();
+    if (!cleaned) return null;
+    const parsed = Number(cleaned);
+    if (!Number.isFinite(parsed)) return null;
+    return Math.max(0, Math.min(100, parsed <= 1 ? parsed * 100 : parsed));
+  }
+  return null;
+}
+
+function formatPercentLabel(value: number): string {
+  return `${new Intl.NumberFormat("pt-BR", { maximumFractionDigits: 1 }).format(value)}%`;
+}
+
+function resolveFavorabilitySummary({
+  favorableToUser,
+  favorableToCounterparty,
+  successProbability,
+  userParty,
+}: {
+  favorableToUser?: string | number | null;
+  favorableToCounterparty?: string | number | null;
+  successProbability?: number | null;
+  userParty?: "author" | "defendant" | null;
+}): FavorabilitySummary | null {
+  let userPct = toPercentageValue(favorableToUser ?? null);
+  let counterpartyPct = toPercentageValue(favorableToCounterparty ?? null);
+
+  if (userPct == null && counterpartyPct != null) {
+    userPct = Math.max(0, Math.min(100, 100 - counterpartyPct));
+  }
+  if (counterpartyPct == null && userPct != null) {
+    counterpartyPct = Math.max(0, Math.min(100, 100 - userPct));
+  }
+
+  if ((userPct == null || counterpartyPct == null) && userParty && typeof successProbability === "number" && Number.isFinite(successProbability)) {
+    const successPct = Math.max(0, Math.min(100, successProbability <= 1 ? successProbability * 100 : successProbability));
+    if (userParty === "author") {
+      userPct = successPct;
+      counterpartyPct = 100 - successPct;
+    } else {
+      userPct = 100 - successPct;
+      counterpartyPct = successPct;
+    }
+  }
+
+  if (userPct == null || counterpartyPct == null) return null;
+
+  const spread = Math.round(Math.abs(userPct - counterpartyPct) * 10) / 10;
+  const leadingSide: LeadingSide = spread < 0.5 ? "balanced" : userPct > counterpartyPct ? "user" : "counterparty";
+
+  return {
+    userPct: Math.round(userPct * 10) / 10,
+    counterpartyPct: Math.round(counterpartyPct * 10) / 10,
+    leadingSide,
+    spread,
+  };
+}
+
+function resolveLeadingLabel(summary: FavorabilitySummary): string {
+  if (summary.leadingSide === "balanced") return "Empate técnico";
+  if (summary.leadingSide === "user") return "Você à frente";
+  return "Contraparte à frente";
+}
+
+function resolveDashboardFavorability(data: DashboardData): FavorabilitySummary | null {
+  for (const metric of data.visao_geral.stats) {
+    const summary = resolveFavorabilitySummary({
+      favorableToUser: metric.value_favorable_to_user,
+      favorableToCounterparty: metric.value_favorable_to_counterparty,
+      userParty: data.case_context?.user_party ?? null,
+    });
+    if (summary) return summary;
+  }
+
+  for (const scenario of data.simulacoes.scenarios) {
+    for (const entry of scenario.data) {
+      const summary = resolveFavorabilitySummary({
+        favorableToUser: entry.value_favorable_to_user,
+        favorableToCounterparty: entry.value_favorable_to_counterparty,
+        userParty: data.case_context?.user_party ?? null,
+      });
+      if (summary) return summary;
+    }
+  }
+
+  return null;
 }
 
 /** Formata número para exibição no campo Valor causa (R$): "100.000,00" */
@@ -1016,6 +1151,7 @@ export default function Dashboard() {
       judge: (safeExtracted as { authority_display?: string | null }).authority_display || safeExtracted.judge || previous.judge,
       action_type: safeExtracted.action_type || previous.action_type,
       claim_value: claimDisplay || previous.claim_value,
+      user_party: previous.user_party ?? "",
     }));
   }, []);
 
@@ -1070,6 +1206,7 @@ export default function Dashboard() {
       if (uploadForm.judge.trim()) formData.append("judge", uploadForm.judge.trim());
       if (uploadForm.action_type.trim()) formData.append("action_type", uploadForm.action_type.trim());
       if (uploadForm.claim_value.trim()) formData.append("claim_value", claimValueForSubmit(uploadForm.claim_value));
+      if (uploadForm.user_party === "author" || uploadForm.user_party === "defendant") formData.append("user_party", uploadForm.user_party);
 
       try {
         const res = await fetch("/api/cases/upload", {
@@ -1088,6 +1225,10 @@ export default function Dashboard() {
       const { numericValue: extractedClaimValueNumeric } = parseExtractedClaimValue((extracted as { claim_value?: unknown }).claim_value);
       const selectedFilename = uploadFile?.name || null;
       const selectedFileContentType = uploadFile?.type || null;
+      const optimisticFavorability = resolveFavorabilitySummary({
+        successProbability: payload.scores?.success_probability ?? null,
+        userParty: uploadForm.user_party === "author" || uploadForm.user_party === "defendant" ? uploadForm.user_party : null,
+      });
 
       toast({
         title: "Processo enviado",
@@ -1137,6 +1278,7 @@ export default function Dashboard() {
         const optimisticHistoryItem: UploadHistoryItem = {
           case_id: payload.case_id,
           process_number: extractedProcess || payload.process_number,
+          user_party: uploadForm.user_party === "author" || uploadForm.user_party === "defendant" ? uploadForm.user_party : undefined,
           case_title: extracted.title ?? null,
           filename: selectedFilename,
           content_type: selectedFileContentType,
@@ -1174,6 +1316,8 @@ export default function Dashboard() {
             risk_score: payload.scores?.risk_score ?? null,
             complexity_score: payload.scores?.complexity_score ?? null,
             ai_summary: payload.scores?.ai_summary ?? null,
+            favorable_to_user_pct: optimisticFavorability?.userPct ?? null,
+            favorable_to_counterparty_pct: optimisticFavorability?.counterpartyPct ?? null,
           },
         };
 
@@ -1371,6 +1515,22 @@ export default function Dashboard() {
       highlights: dashboardData?.visao_geral.insights.slice(0, 3) || [],
     };
   }, [appliedFilters.juiz, appliedFilters.periodo, dashboardData]);
+  const analysisProcessNumber = useMemo(() => {
+    const processFromContext = dashboardData?.case_context?.process_number?.trim();
+    if (processFromContext) return processFromContext;
+
+    if (navigationCaseId && dashboardData) {
+      const processFromNavigationCase = dashboardData.inteligencia.acoes_rescisorias.candidates
+        .find((item) => item.case_id === navigationCaseId)
+        ?.process_number?.trim();
+      if (processFromNavigationCase) return processFromNavigationCase;
+    }
+
+    const processFromUserCases = resolveLatestProcessNumber(userCases);
+    if (processFromUserCases) return processFromUserCases;
+
+    return resolveLatestProcessNumber(uploadHistoryItems);
+  }, [dashboardData, navigationCaseId, uploadHistoryItems, userCases]);
 
   useEffect(() => {
     setDismissedAlerts([]);
@@ -1722,13 +1882,23 @@ export default function Dashboard() {
     const dataSourceLine = isDemoMode
       ? "Fonte: modo DEMO com dados simulados."
       : "Fonte: IA + JusBrasil e outras fontes públicas.";
+    const processReferenceLine = analysisProcessNumber ? `Processo de referência: ${analysisProcessNumber}.` : null;
+    const baseSourceNote = detail.sourceNote || dataSourceLine;
+    const sourceNote =
+      processReferenceLine && !baseSourceNote.includes(processReferenceLine)
+        ? `${baseSourceNote} ${processReferenceLine}`
+        : baseSourceNote;
     const incomingLines = detail.lines || [];
+    const linesWithProcessReference =
+      processReferenceLine && !incomingLines.some((line) => line.includes(processReferenceLine))
+        ? [...incomingLines, processReferenceLine]
+        : incomingLines;
 
     if (detail.variant === "scenario") {
       setSelectedCardDetail({
         ...detail,
-        lines: incomingLines,
-        sourceNote: detail.sourceNote || dataSourceLine,
+        lines: linesWithProcessReference,
+        sourceNote,
       });
       return;
     }
@@ -1736,8 +1906,8 @@ export default function Dashboard() {
     setSelectedCardDetail({
       ...detail,
       variant: "default",
-      lines: incomingLines.includes(dataSourceLine) ? incomingLines : [...incomingLines, dataSourceLine],
-      sourceNote: detail.sourceNote || dataSourceLine,
+      lines: linesWithProcessReference.includes(dataSourceLine) ? linesWithProcessReference : [...linesWithProcessReference, dataSourceLine],
+      sourceNote,
     });
   };
 
@@ -1848,6 +2018,19 @@ export default function Dashboard() {
             <span className="whitespace-nowrap">{formatUpdatedLabel(lastUpdatedAt)}</span>
           </div>
         </section>
+        <section className={`${PANEL_SOFT_CLASS} mb-4 border-cyan-400/35 bg-cyan-500/10 p-3`}>
+          <p className="text-xs font-semibold text-cyan-100">
+            {activeTab === "historico-uploads" ? (
+              "No histórico, cada análise exibe explicitamente o número do processo correspondente em cada card."
+            ) : analysisProcessNumber ? (
+              <>
+                Dados de análise desta aba referem-se ao processo nº <span className="font-mono font-bold">{analysisProcessNumber}</span>.
+              </>
+            ) : (
+              "Processo de referência não identificado neste recorte. Use o número do processo exibido em cada bloco para manter o contexto."
+            )}
+          </p>
+        </section>
         {isDemoMode ? (
           <section className={`${PANEL_SOFT_CLASS} p-4 mb-6`}>
             <p className="text-sm text-slate-300">
@@ -1886,33 +2069,52 @@ export default function Dashboard() {
             </div>
 
             {isUploadPanelOpen ? (
-              <div id="upload-processo-panel" className="space-y-5">
-                <div className="grid items-end gap-3 md:grid-cols-6">
-                  <div className="md:col-span-2">
-                    <label className="text-xs font-semibold uppercase text-slate-300">Arquivo do processo</label>
-                    <input
-                      type="file"
-                      className="mt-1 block w-full text-sm text-slate-300 file:mr-3 file:rounded-md file:border file:border-slate-700 file:bg-slate-900 file:px-3 file:py-2 file:text-cyan-200 hover:file:bg-slate-800"
-                      onChange={handleUploadFileChange}
-                      disabled={extractPreviewMutation.isPending || uploadMutation.isPending}
-                    />
-                    {extractPreviewMutation.isPending ? <p className="mt-1 text-[11px] text-cyan-300">Extraindo campos automaticamente...</p> : null}
+              <div id="upload-processo-panel" className="space-y-6">
+                <div className="grid items-start gap-x-4 gap-y-0 md:grid-cols-6 md:gap-y-4">
+                  <div className="flex min-w-0 flex-col gap-2.5 md:col-span-2">
+                    <label className={UPLOAD_FORM_LABEL}>Arquivo do processo</label>
+                    <div className="flex min-h-[38px] items-center rounded-md border border-slate-700 bg-slate-900/70 px-2 py-1.5">
+                      <input
+                        type="file"
+                        className="block w-full min-w-0 text-sm text-slate-300 file:mr-3 file:min-h-[28px] file:rounded file:border-0 file:border-slate-700 file:bg-slate-900 file:px-3 file:py-1.5 file:text-xs file:font-semibold file:text-cyan-200 hover:file:bg-slate-800"
+                        onChange={handleUploadFileChange}
+                        disabled={extractPreviewMutation.isPending || uploadMutation.isPending}
+                      />
+                    </div>
+                    {extractPreviewMutation.isPending ? <p className="text-[11px] text-cyan-300">Extraindo campos automaticamente...</p> : null}
                   </div>
                   <InputField label="Número do processo" value={uploadForm.process_number} onChange={(value) => setUploadForm((s) => ({ ...s, process_number: value }))} placeholder="Ex.: 0000000-00.2025.4.01.0000" />
+                  <div className="flex min-w-0 flex-col gap-2.5">
+                    <label className={UPLOAD_FORM_LABEL}>Você é neste processo</label>
+                    <select
+                      value={uploadForm.user_party}
+                      onChange={(e) => setUploadForm((s) => ({ ...s, user_party: (e.target.value || "") as "" | "author" | "defendant" }))}
+                      className="h-[38px] min-w-0 rounded-md border border-slate-700 bg-slate-900/70 px-3 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-cyan-500/40"
+                    >
+                      <option value="">Não informar</option>
+                      <option value="author">Autor</option>
+                      <option value="defendant">Réu</option>
+                    </select>
+                    <p className="text-[11px] leading-tight text-slate-400">Define a perspectiva dos indicadores (favorável a você ou à contraparte).</p>
+                  </div>
                   <InputField label="Tribunal" value={uploadForm.tribunal} onChange={(value) => setUploadForm((s) => ({ ...s, tribunal: value }))} placeholder="Ex.: TRF1, TJSP, TRT 2ª Região" />
-                  <div className="md:col-span-2">
+                  <div className="hidden min-w-0 md:block md:col-span-1" aria-hidden />
+                </div>
+                <div className="grid items-start gap-x-4 gap-y-4 md:grid-cols-6">
+                  <div className="hidden min-w-0 md:block md:col-span-2" aria-hidden />
+                  <div className="min-w-0 md:col-span-2">
                     <InputField label="Autoridade Responsável" value={uploadForm.judge} onChange={(value) => setUploadForm((s) => ({ ...s, judge: value }))} placeholder="Ex.: Juiz (1º grau): Nome; Des. Federal / Relator: Nome" />
                   </div>
-                </div>
-                <div className="mt-3 grid items-end gap-3 md:grid-cols-6">
-                  <div className="hidden md:block md:col-span-2" aria-hidden />
                   <InputField label="Valor causa (R$)" value={uploadForm.claim_value} onChange={(value) => setUploadForm((s) => ({ ...s, claim_value: value }))} placeholder="Ex.: 50.000,00" />
                   <InputField label="Tipo de ação" value={uploadForm.action_type} onChange={(value) => setUploadForm((s) => ({ ...s, action_type: value }))} placeholder="Ex.: Ação de conhecimento, Mandado de segurança" />
-                  <div className="flex justify-stretch md:col-span-2 md:justify-end">
+                </div>
+                <div className="grid items-start gap-x-4 gap-y-4 md:grid-cols-6">
+                  <div className="hidden min-w-0 md:block md:col-span-4" aria-hidden />
+                  <div className="flex min-w-0 justify-end md:col-span-2">
                     <Button
                       onClick={() => uploadMutation.mutate()}
                       disabled={uploadMutation.isPending || extractPreviewMutation.isPending || !uploadFile}
-                      className="h-[38px] w-full gap-2 bg-cyan-500 px-6 font-bold text-slate-950 hover:bg-cyan-400 md:w-auto"
+                      className="h-[38px] gap-2 bg-cyan-500 px-6 font-bold text-slate-950 hover:bg-cyan-400"
                     >
                       <Upload size={16} />
                       {extractPreviewMutation.isPending ? "Extraindo..." : uploadMutation.isPending ? "Enviando..." : "Enviar para Analise"}
@@ -2140,6 +2342,7 @@ export default function Dashboard() {
               <VisaoGeralView
                 data={dashboardData}
                 radarData={radarData}
+                referenceProcessNumber={analysisProcessNumber}
                 onOpenStrategicRecommendations={() => setIsStrategicRecommendationsModalOpen(true)}
                 onOpenCardDetail={openCardDetail}
               />
@@ -2187,30 +2390,62 @@ export default function Dashboard() {
                   </nav>
                   <div className="mt-3 rounded-lg border border-slate-200 bg-slate-100 px-3 py-2 text-xs text-slate-700 dark:border-cyan-500/25 dark:bg-slate-950/55 dark:text-slate-200">
                     Módulo ativo: <strong>{resolveStrategicModuleLabel(strategicModule)}</strong>
-                    {navigationCaseId ? ` • Caso de referência: ${navigationCaseId.slice(0, 8)}...` : ""}
+                    {navigationCaseId ? (
+                      <>
+                        {" • "}
+                        {dashboardData?.case_context?.case_id === navigationCaseId && dashboardData.case_context.process_number ? (
+                          <>Processo: <span className="font-mono">{dashboardData.case_context.process_number}</span></>
+                        ) : (
+                          <>Caso de referência: {navigationCaseId.slice(0, 8)}...</>
+                        )}
+                        {dashboardData?.case_context?.case_id === navigationCaseId && dashboardData.case_context.user_party && (
+                          <> • Perspectiva: <strong>{dashboardData.case_context.user_party === "author" ? "Autor" : "Réu"}</strong></>
+                        )}
+                      </>
+                    ) : null}
                     {typeof highlightedRescisoriaScore === "number" ? ` • Score: ${highlightedRescisoriaScore}/100` : ""}
                     {navigationOrigin ? ` • Origem: ${navigationOrigin}` : ""}
                   </div>
                 </aside>
 
                 <div className="order-2 min-w-0 space-y-4">
+                  {dashboardData?.case_context && (
+                    <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-2 dark:border-slate-700 dark:bg-slate-800/50">
+                      <p className="text-sm font-semibold text-slate-700 dark:text-slate-200">
+                        Processo: <span className="font-mono">{dashboardData.case_context.process_number}</span>
+                        {dashboardData.case_context.case_title ? ` — ${dashboardData.case_context.case_title}` : ""}
+                        {dashboardData.case_context.user_party && (
+                          <span className="ml-2 text-xs font-medium text-slate-600 dark:text-slate-400">
+                            • Perspectiva: você como <strong>{dashboardData.case_context.user_party === "author" ? "Autor" : "Réu"}</strong>
+                          </span>
+                        )}
+                      </p>
+                    </div>
+                  )}
                   {strategicModule === "analise-decisoes" ? (
-                    <InteligenciaView data={dashboardData} onOpenCardDetail={openCardDetail} onOpenSimilarProcess={openSimilarProcessDetail} />
+                    <InteligenciaView
+                      data={dashboardData}
+                      referenceProcessNumber={analysisProcessNumber}
+                      onOpenCardDetail={openCardDetail}
+                      onOpenSimilarProcess={openSimilarProcessDetail}
+                    />
                   ) : null}
                   {strategicModule === "simulacoes-avancadas" ? (
                     <SimulacoesView
                       data={dashboardData}
+                      referenceProcessNumber={analysisProcessNumber}
                       onOpenCardDetail={openCardDetail}
                       focusedScenarioTitle={focusedSimulationScenario}
                       isDemoMode={isDemoMode}
                     />
                   ) : null}
                   {strategicModule === "gemeo-digital" ? (
-                    <GemeoDigitalView data={dashboardData} onOpenCardDetail={openCardDetail} />
+                    <GemeoDigitalView data={dashboardData} referenceProcessNumber={analysisProcessNumber} onOpenCardDetail={openCardDetail} />
                   ) : null}
                   {strategicModule === "acoes-rescisorias" ? (
                     <AcoesRescisoriasView
                       data={dashboardData}
+                      referenceProcessNumber={analysisProcessNumber}
                       highlightedCaseId={navigationCaseId}
                       onOpenFromCandidate={(caseId) => {
                         setNavigationCaseId(caseId);
@@ -2224,6 +2459,7 @@ export default function Dashboard() {
             {activeTab === "alertas" && (
               <AlertasView
                 data={dashboardAlertData}
+                referenceProcessNumber={analysisProcessNumber}
                 dismissedAlerts={dismissedAlerts}
                 getAlertKey={getAlertKey}
                 onViewAlert={handleViewAlert}
@@ -2408,11 +2644,13 @@ export default function Dashboard() {
 function VisaoGeralView({
   data,
   radarData,
+  referenceProcessNumber,
   onOpenStrategicRecommendations,
   onOpenCardDetail,
 }: {
   data: DashboardData;
   radarData: Array<{ subject: string; A: number; B: number }>;
+  referenceProcessNumber: string | null;
   onOpenStrategicRecommendations: () => void;
   onOpenCardDetail: (detail: CardDetail) => void;
 }) {
@@ -2420,8 +2658,30 @@ function VisaoGeralView({
   const bestWeekDay = weeklyActivity.length
     ? weeklyActivity.reduce((best, item) => (item.value > best.value ? item : best), weeklyActivity[0])
     : { name: "-", value: 0 };
+  const ctx = data.case_context;
+  const displayedProcessNumber = ctx?.process_number?.trim() || referenceProcessNumber;
+  const perspectiveLabel = ctx?.user_party === "author" ? "Autor" : ctx?.user_party === "defendant" ? "Réu" : null;
+  const favorabilitySummary = resolveDashboardFavorability(data);
   return (
     <div className="animate-in fade-in slide-in-from-bottom-4 duration-500">
+      {displayedProcessNumber && (
+        <div className="mb-6 rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 dark:border-slate-700 dark:bg-slate-800/50">
+          <p className="text-sm font-semibold text-slate-700 dark:text-slate-200">
+            Processo: <span className="font-mono">{displayedProcessNumber}</span>
+            {ctx?.case_title ? ` — ${ctx.case_title}` : ""}
+          </p>
+          {perspectiveLabel && (
+            <p className="mt-1 text-xs font-medium text-slate-600 dark:text-slate-400">
+              Perspectiva: você como <strong>{perspectiveLabel}</strong>
+            </p>
+          )}
+          {favorabilitySummary && (
+            <p className="mt-1 text-xs font-semibold text-cyan-700 dark:text-cyan-300">
+              {resolveLeadingLabel(favorabilitySummary)} ({formatPercentLabel(favorabilitySummary.userPct)} x {formatPercentLabel(favorabilitySummary.counterpartyPct)})
+            </p>
+          )}
+        </div>
+      )}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
         {data.visao_geral.stats.slice(0, 3).map((item, idx) => (
           <MetricCard
@@ -2621,13 +2881,17 @@ function VisaoGeralView({
 
 function InteligenciaView({
   data,
+  referenceProcessNumber,
   onOpenCardDetail,
   onOpenSimilarProcess,
 }: {
   data: DashboardData;
+  referenceProcessNumber: string | null;
   onOpenCardDetail: (detail: CardDetail) => void;
   onOpenSimilarProcess: (process: SimilarProcessSource) => void;
 }) {
+  const referenceProcess = data.case_context?.process_number?.trim() || referenceProcessNumber;
+  const perspective = data.case_context?.user_party ?? null;
   return (
     <div className="animate-in fade-in slide-in-from-bottom-4 duration-500 space-y-8">
       <div className="flex items-center gap-3 mb-2">
@@ -2642,6 +2906,11 @@ function InteligenciaView({
           <FileText size={20} className="text-cyan-300" />
           <h3 className="font-bold uppercase tracking-tight text-sm">Processos Similares</h3>
         </div>
+        {referenceProcess && (
+          <p className="mb-3 text-xs font-medium text-slate-300">
+            Processo de referência: <span className="font-mono">{referenceProcess}</span>
+          </p>
+        )}
         <div className="grid md:grid-cols-3 gap-6">
           {data.inteligencia.similar_processes.map((item, idx) => (
             <SimilarProcessCard
@@ -2652,6 +2921,7 @@ function InteligenciaView({
               resultColor={item.result_color}
               time={item.time}
               type={item.type}
+              perspective={perspective}
               onClick={() => onOpenSimilarProcess(item)}
             />
           ))}
@@ -2739,11 +3009,13 @@ function InteligenciaView({
 
 function SimulacoesView({
   data,
+  referenceProcessNumber,
   onOpenCardDetail,
   focusedScenarioTitle,
   isDemoMode,
 }: {
   data: DashboardData;
+  referenceProcessNumber: string | null;
   onOpenCardDetail: (detail: CardDetail) => void;
   focusedScenarioTitle: string | null;
   isDemoMode: boolean;
@@ -2764,6 +3036,11 @@ function SimulacoesView({
         </div>
         <h2 className="text-2xl font-bold text-slate-100">Simulações Avançadas - Gêmeo Digital</h2>
       </div>
+      {referenceProcessNumber && (
+        <p className="text-xs font-medium text-slate-300">
+          Processo de referência: <span className="font-mono">{referenceProcessNumber}</span>
+        </p>
+      )}
 
       <div
         className="bg-slate-900/85 text-white p-6 rounded-xl border border-slate-800 border-l-4 border-cyan-400 cursor-pointer hover:border-cyan-500/60 transition-colors"
@@ -2845,11 +3122,14 @@ function SimulacoesView({
 
 function GemeoDigitalView({
   data,
+  referenceProcessNumber,
   onOpenCardDetail,
 }: {
   data: DashboardData;
+  referenceProcessNumber: string | null;
   onOpenCardDetail: (detail: CardDetail) => void;
 }) {
+  const referenceProcess = data.case_context?.process_number?.trim() || referenceProcessNumber;
   return (
     <div className="animate-in fade-in slide-in-from-bottom-4 duration-500 space-y-6">
       <div className={`${PANEL_CLASS} p-6`}>
@@ -2858,30 +3138,50 @@ function GemeoDigitalView({
           <h3 className="text-lg font-bold">Gêmeo Digital</h3>
         </div>
         <p className="text-sm leading-relaxed text-slate-300">{data.simulacoes.description}</p>
+        {referenceProcess && (
+          <p className="mt-2 text-xs font-medium text-slate-400">
+            Processo de referência: <span className="font-mono">{referenceProcess}</span>
+          </p>
+        )}
       </div>
 
       <div className="grid gap-4 md:grid-cols-3">
-        {data.simulacoes.scenarios.map((scenario) => (
-          <button
-            key={scenario.title}
-            type="button"
-            className={`${PANEL_SOFT_CLASS} p-4 text-left transition-colors hover:border-cyan-500/40`}
-            onClick={() =>
-              onOpenCardDetail({
-                title: scenario.title,
-                description: scenario.footer,
-                lines: scenario.data.map((entry) => `${entry.label}: ${entry.val}`),
-                targetTab: "inteligencia",
-                targetModule: "simulacoes-avancadas",
-                targetScenarioTitle: scenario.title,
-              })
-            }
-          >
-            <p className="text-xs font-bold uppercase tracking-wide text-cyan-200">{scenario.tag}</p>
-            <p className="mt-1 text-sm font-bold text-slate-100">{scenario.title}</p>
-            <p className="mt-2 text-xs text-slate-300">{scenario.footer}</p>
-          </button>
-        ))}
+        {data.simulacoes.scenarios.map((scenario) => {
+          const favorabilitySummary = scenario.data.reduce((found: FavorabilitySummary | null, entry) => {
+            if (found) return found;
+            return resolveFavorabilitySummary({
+              favorableToUser: entry.value_favorable_to_user,
+              favorableToCounterparty: entry.value_favorable_to_counterparty,
+            });
+          }, null);
+
+          return (
+            <button
+              key={scenario.title}
+              type="button"
+              className={`${PANEL_SOFT_CLASS} p-4 text-left transition-colors hover:border-cyan-500/40`}
+              onClick={() =>
+                onOpenCardDetail({
+                  title: scenario.title,
+                  description: scenario.footer,
+                  lines: scenario.data.map((entry) => `${entry.label}: ${entry.val}`),
+                  targetTab: "inteligencia",
+                  targetModule: "simulacoes-avancadas",
+                  targetScenarioTitle: scenario.title,
+                })
+              }
+            >
+              <p className="text-xs font-bold uppercase tracking-wide text-cyan-200">{scenario.tag}</p>
+              <p className="mt-1 text-sm font-bold text-slate-100">{scenario.title}</p>
+              {favorabilitySummary && (
+                <p className="mt-2 text-xs font-semibold text-cyan-200">
+                  {resolveLeadingLabel(favorabilitySummary)} ({formatPercentLabel(favorabilitySummary.userPct)} x {formatPercentLabel(favorabilitySummary.counterpartyPct)})
+                </p>
+              )}
+              <p className="mt-2 text-xs text-slate-300">{scenario.footer}</p>
+            </button>
+          );
+        })}
       </div>
     </div>
   );
@@ -2889,10 +3189,12 @@ function GemeoDigitalView({
 
 function AcoesRescisoriasView({
   data,
+  referenceProcessNumber,
   highlightedCaseId,
   onOpenFromCandidate,
 }: {
   data: DashboardData;
+  referenceProcessNumber: string | null;
   highlightedCaseId: string | null;
   onOpenFromCandidate: (caseId: string) => void;
 }) {
@@ -2908,6 +3210,11 @@ function AcoesRescisoriasView({
         <p className="mt-2 text-xs text-slate-400">
           Ferramenta de reversão de decisões transitadas em julgado com análise probabilística e financeira.
         </p>
+        {referenceProcessNumber && (
+          <p className="mt-2 text-xs font-medium text-slate-300">
+            Processo de referência: <span className="font-mono">{referenceProcessNumber}</span>
+          </p>
+        )}
       </div>
 
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
@@ -3158,6 +3465,12 @@ function UploadHistoryView({
             const rescisoria = item.generated_data?.rescisoria;
             const isRescisoriaCandidate = typeof rescisoria?.viability_score === "number" && rescisoria.viability_score >= 70;
             const authorityDisplay = item.generated_data?.extracted?.authority_display ?? null;
+            const favorabilitySummary = resolveFavorabilitySummary({
+              favorableToUser: item.generated_data?.favorable_to_user_pct,
+              favorableToCounterparty: item.generated_data?.favorable_to_counterparty_pct,
+              successProbability: item.generated_data?.success_probability,
+              userParty: item.user_party ?? null,
+            });
 
             const isExpanded = expandedCaseIds.includes(item.case_id);
             const isDeletingThis = isDeletingCaseId === item.case_id;
@@ -3171,7 +3484,12 @@ function UploadHistoryView({
                   <div className="min-w-0 flex-1">
                     <p className="text-base font-bold text-slate-900 dark:text-slate-100">{item.filename || "Arquivo não identificado"}</p>
                     <p className="text-[12px] text-slate-300">
-                      Processo: {item.process_number || `Caso ${item.case_id.slice(0, 8)}`}
+                      Processo: <span className="font-mono font-semibold">{item.process_number || `Caso ${item.case_id.slice(0, 8)}`}</span>
+                      {item.user_party ? (
+                        <span className="ml-2 inline-flex rounded-full border border-slate-400 bg-slate-200 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider text-slate-700 dark:border-slate-500 dark:bg-slate-700 dark:text-slate-200">
+                          {item.user_party === "author" ? "Autor" : "Réu"}
+                        </span>
+                      ) : null}
                       {createdAtLabel ? ` • Enviado em ${createdAtLabel}` : ""}
                       {processedAtLabel ? ` • Último processamento: ${processedAtLabel}` : ""}
                     </p>
@@ -3217,6 +3535,11 @@ function UploadHistoryView({
                   <span className="rounded-md border border-slate-300 bg-slate-100 px-2 py-0.5 dark:border-slate-700 dark:bg-slate-800/60">Tipo: {item.action_type || "--"}</span>
                   <span className="rounded-md border border-slate-300 bg-slate-100 px-2 py-0.5 dark:border-slate-700 dark:bg-slate-800/60">Valor: {formatCurrencyBRL(item.claim_value)}</span>
                   <span className="rounded-md border border-cyan-300 bg-cyan-100 px-2 py-0.5 text-cyan-800 dark:border-cyan-500/35 dark:bg-cyan-500/10 dark:text-cyan-200">Progresso IA: {stageProgress}%</span>
+                  {favorabilitySummary && (
+                    <span className="rounded-md border border-emerald-300 bg-emerald-100 px-2 py-0.5 text-emerald-800 dark:border-emerald-500/35 dark:bg-emerald-500/10 dark:text-emerald-200">
+                      {resolveLeadingLabel(favorabilitySummary)} ({formatPercentLabel(favorabilitySummary.userPct)} x {formatPercentLabel(favorabilitySummary.counterpartyPct)})
+                    </span>
+                  )}
                 </div>
 
                 <div className="mt-3 h-1.5 w-full overflow-hidden rounded-full bg-slate-800/90">
@@ -3304,8 +3627,28 @@ function UploadHistoryView({
                       <div className="rounded-lg border border-slate-200 bg-white p-3 dark:border-slate-800 dark:bg-slate-900/45">
                         <p className="text-[11px] font-bold uppercase tracking-wide text-slate-600 dark:text-slate-400">Resultado da análise da IA</p>
                         <div className="mt-2 space-y-1.5 text-sm text-slate-800 dark:text-slate-200">
-                          <p>Êxito: {formatProbabilityPercent(item.generated_data?.success_probability)}</p>
-                          <p>Acordo: {formatProbabilityPercent(item.generated_data?.settlement_probability)}</p>
+                          {favorabilitySummary ? (
+                            <div className="rounded-md border border-cyan-200 bg-cyan-50 px-2.5 py-2 text-xs dark:border-cyan-500/30 dark:bg-cyan-500/10">
+                              <p className="font-semibold text-cyan-800 dark:text-cyan-100">
+                                {resolveLeadingLabel(favorabilitySummary)} no processo {item.process_number || "--"}
+                              </p>
+                              <p className="mt-1 text-cyan-700 dark:text-cyan-200">
+                                Você: {formatPercentLabel(favorabilitySummary.userPct)} • Contraparte: {formatPercentLabel(favorabilitySummary.counterpartyPct)}
+                              </p>
+                            </div>
+                          ) : null}
+                          {item.user_party ? (
+                            <p>Você neste processo: <strong>{item.user_party === "author" ? "Autor" : "Réu"}</strong></p>
+                          ) : null}
+                          {item.generated_data?.favorable_to_user_pct != null || item.generated_data?.favorable_to_counterparty_pct != null ? (
+                            <>
+                              <p className="text-emerald-600 dark:text-emerald-400">Favorável a você: {item.generated_data?.favorable_to_user_pct != null ? `${item.generated_data.favorable_to_user_pct}%` : "--"}</p>
+                              <p className="text-amber-600 dark:text-amber-400">Favorável à contraparte: {item.generated_data?.favorable_to_counterparty_pct != null ? `${item.generated_data.favorable_to_counterparty_pct}%` : "--"}</p>
+                            </>
+                          ) : (
+                            <p>Êxito: {formatProbabilityPercent(item.generated_data?.success_probability)}</p>
+                          )}
+                          <p>Acordo: {formatProbabilityPercent(item.generated_data?.settlement_probability)} <span className="text-[10px] text-slate-500 dark:text-slate-400">(chance de resolução; não indica favorabilidade)</span></p>
                           <p>Risco: {typeof item.generated_data?.risk_score === "number" ? `${Math.round(item.generated_data.risk_score)} / 100` : "--"}</p>
                           <p>Complexidade: {typeof item.generated_data?.complexity_score === "number" ? `${Math.round(item.generated_data.complexity_score)} / 100` : "--"}</p>
                           <p>Tempo estimado: {typeof item.generated_data?.expected_decision_months === "number" ? `${item.generated_data.expected_decision_months.toFixed(1)} meses` : "--"}</p>
@@ -3384,8 +3727,47 @@ function UploadHistoryCompleteInsights({
   data: DashboardData;
   caseItem: UploadHistoryItem | null;
 }) {
+  const ctx = data.case_context ?? (caseItem ? { case_id: caseItem.case_id, process_number: caseItem.process_number || "", case_title: caseItem.case_title ?? null, user_party: caseItem.user_party ?? null } : null);
+  const perspectiveLabel = ctx?.user_party === "author" ? "Autor" : ctx?.user_party === "defendant" ? "Réu" : null;
+  const favorabilitySummary =
+    resolveFavorabilitySummary({
+      favorableToUser: caseItem?.generated_data?.favorable_to_user_pct,
+      favorableToCounterparty: caseItem?.generated_data?.favorable_to_counterparty_pct,
+      successProbability: caseItem?.generated_data?.success_probability,
+      userParty: ctx?.user_party ?? null,
+    }) ?? resolveDashboardFavorability(data);
+
   return (
     <div className="mt-5 space-y-6">
+      {ctx && (
+        <section className="rounded-xl border border-slate-200 bg-slate-50 p-4 dark:border-slate-700 dark:bg-slate-800/50">
+          <p className="text-sm font-semibold text-slate-800 dark:text-slate-200">
+            Processo: <span className="font-mono">{ctx.process_number}</span>
+            {ctx.case_title ? ` — ${ctx.case_title}` : ""}
+          </p>
+          {perspectiveLabel && (
+            <p className="mt-1 text-xs font-medium text-slate-600 dark:text-slate-400">
+              Você neste processo: <strong>{perspectiveLabel}</strong>
+            </p>
+          )}
+        </section>
+      )}
+      {favorabilitySummary && (
+        <section className="rounded-xl border border-cyan-200 bg-cyan-50 p-4 dark:border-cyan-500/30 dark:bg-cyan-500/10">
+          <p className="text-[11px] font-bold uppercase tracking-wide text-cyan-800 dark:text-cyan-200">Favorabilidade consolidada do caso</p>
+          <p className="mt-1 text-sm font-semibold text-cyan-900 dark:text-cyan-100">
+            {resolveLeadingLabel(favorabilitySummary)}
+            {ctx?.process_number ? (
+              <>
+                {" "}• Processo <span className="font-mono">{ctx.process_number}</span>
+              </>
+            ) : null}
+          </p>
+          <p className="mt-1 text-xs text-cyan-700 dark:text-cyan-200">
+            Você: {formatPercentLabel(favorabilitySummary.userPct)} • Contraparte: {formatPercentLabel(favorabilitySummary.counterpartyPct)}
+          </p>
+        </section>
+      )}
       <section className="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900/60">
         <p className="text-[11px] font-bold uppercase tracking-wide text-slate-600 dark:text-slate-400">Contexto aplicado automaticamente</p>
         <div className="mt-2 flex flex-wrap gap-2 text-[11px]">
@@ -3405,14 +3787,27 @@ function UploadHistoryCompleteInsights({
       <section className="space-y-3">
         <h4 className="text-sm font-bold uppercase tracking-wide text-slate-700 dark:text-slate-300">Métricas principais</h4>
         <div className="grid gap-3 md:grid-cols-3">
-          {data.visao_geral.stats.map((metric, idx) => (
-            <div key={`${metric.title}-${idx}`} className="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900/60">
-              <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500 dark:text-slate-400">{metric.title}</p>
-              <p className="mt-2 text-2xl font-black text-slate-900 dark:text-slate-100">{metric.value}</p>
-              <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">{metric.subtitle}</p>
-              <p className="mt-2 text-[11px] text-slate-500 dark:text-slate-400">{metric.footer}</p>
-            </div>
-          ))}
+          {data.visao_geral.stats.map((metric, idx) => {
+            const metricFavorability = resolveFavorabilitySummary({
+              favorableToUser: metric.value_favorable_to_user,
+              favorableToCounterparty: metric.value_favorable_to_counterparty,
+            });
+            return (
+              <div key={`${metric.title}-${idx}`} className="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900/60">
+                <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500 dark:text-slate-400">{metric.title}</p>
+                <p className="mt-2 text-2xl font-black text-slate-900 dark:text-slate-100">{metric.value}</p>
+                {(metric.value_favorable_to_user != null || metric.value_favorable_to_counterparty != null) && (
+                  <div className="mt-2 flex flex-wrap gap-x-3 gap-y-0.5 text-xs font-semibold">
+                    {metricFavorability && <span className="text-cyan-700 dark:text-cyan-300">{resolveLeadingLabel(metricFavorability)}</span>}
+                    {metric.value_favorable_to_user != null && <span className="text-emerald-600 dark:text-emerald-400">Favorável a você: {metric.value_favorable_to_user}</span>}
+                    {metric.value_favorable_to_counterparty != null && <span className="text-amber-600 dark:text-amber-400">Favorável à contraparte: {metric.value_favorable_to_counterparty}</span>}
+                  </div>
+                )}
+                <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">{metric.subtitle}</p>
+                <p className="mt-2 text-[11px] text-slate-500 dark:text-slate-400">{metric.footer}</p>
+              </div>
+            );
+          })}
         </div>
       </section>
 
@@ -3474,20 +3869,34 @@ function UploadHistoryCompleteInsights({
             <strong>Gêmeo digital:</strong> {data.simulacoes.description}
           </p>
           <div className="mt-3 grid gap-3 md:grid-cols-3">
-            {data.simulacoes.scenarios.map((scenario, idx) => (
-              <div key={`${scenario.title}-${idx}`} className="rounded-lg border border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-900/70">
-                <p className="text-xs font-bold text-slate-800 dark:text-slate-100">{scenario.title}</p>
-                <p className="mt-1 text-[11px] text-slate-500 dark:text-slate-400">{scenario.tag}</p>
-                <div className="mt-2 space-y-1">
-                  {scenario.data.map((entry, entryIdx) => (
-                    <p key={`${entry.label}-${entryIdx}`} className="text-xs text-slate-700 dark:text-slate-300">
-                      {entry.label}: {entry.val}
+            {data.simulacoes.scenarios.map((scenario, idx) => {
+              const scenarioFavorability = scenario.data.reduce((found: FavorabilitySummary | null, entry) => {
+                if (found) return found;
+                return resolveFavorabilitySummary({
+                  favorableToUser: entry.value_favorable_to_user,
+                  favorableToCounterparty: entry.value_favorable_to_counterparty,
+                });
+              }, null);
+              return (
+                <div key={`${scenario.title}-${idx}`} className="rounded-lg border border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-900/70">
+                  <p className="text-xs font-bold text-slate-800 dark:text-slate-100">{scenario.title}</p>
+                  <p className="mt-1 text-[11px] text-slate-500 dark:text-slate-400">{scenario.tag}</p>
+                  {scenarioFavorability && (
+                    <p className="mt-1 text-[11px] font-semibold text-cyan-700 dark:text-cyan-300">
+                      {resolveLeadingLabel(scenarioFavorability)} ({formatPercentLabel(scenarioFavorability.userPct)} x {formatPercentLabel(scenarioFavorability.counterpartyPct)})
                     </p>
-                  ))}
+                  )}
+                  <div className="mt-2 space-y-1">
+                    {scenario.data.map((entry, entryIdx) => (
+                      <p key={`${entry.label}-${entryIdx}`} className="text-xs text-slate-700 dark:text-slate-300">
+                        {entry.label}: {entry.val}
+                      </p>
+                    ))}
+                  </div>
+                  <p className="mt-2 text-[11px] text-slate-600 dark:text-slate-300">{scenario.footer}</p>
                 </div>
-                <p className="mt-2 text-[11px] text-slate-600 dark:text-slate-300">{scenario.footer}</p>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       </section>
@@ -3530,6 +3939,7 @@ function UploadHistoryCompleteInsights({
 
 function AlertasView({
   data,
+  referenceProcessNumber,
   dismissedAlerts,
   getAlertKey,
   onViewAlert,
@@ -3541,6 +3951,7 @@ function AlertasView({
   onForcedCategoryApplied,
 }: {
   data: DashboardData & { alertas: { counts: DashboardData["alertas"]["counts"]; details: DashboardAlertItem[] } };
+  referenceProcessNumber: string | null;
   dismissedAlerts: string[];
   getAlertKey: (item: DashboardAlertItem) => string;
   onViewAlert: (item: DashboardAlertItem) => void;
@@ -3600,7 +4011,14 @@ function AlertasView({
         <div className="w-10 h-10 bg-cyan-500/20 border border-cyan-400/40 rounded-lg flex items-center justify-center">
           <BellRing className="text-cyan-200 w-6 h-6" />
         </div>
-        <h2 className="text-2xl font-bold text-slate-100">Alertas Estratégicos</h2>
+        <div>
+          <h2 className="text-2xl font-bold text-slate-100">Alertas Estratégicos</h2>
+          {referenceProcessNumber && (
+            <p className="text-xs font-medium text-slate-300">
+              Processo de referência: <span className="font-mono">{referenceProcessNumber}</span>
+            </p>
+          )}
+        </div>
       </div>
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
@@ -3810,20 +4228,34 @@ function SimilarProcessDetailContent({ detail }: { detail: SimilarProcessDetail 
 
 function InputField({ label, value, onChange, placeholder }: { label: string; value: string; onChange: (value: string) => void; placeholder?: string }) {
   return (
-    <div className="flex flex-col gap-1">
-      <label className="text-xs font-semibold text-slate-300 uppercase">{label}</label>
+    <div className="flex w-full min-w-0 flex-col gap-2.5">
+      <label className={UPLOAD_FORM_LABEL}>{label}</label>
       <input
         value={value}
         onChange={(event) => onChange(event.target.value)}
         placeholder={placeholder}
-        className="h-[38px] px-3 border border-slate-700 rounded-md bg-slate-900/70 text-sm text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-cyan-500/40"
+        className="h-[38px] w-full min-w-0 rounded-md border border-slate-700 bg-slate-900/70 px-3 text-sm text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-cyan-500/40"
       />
     </div>
   );
 }
 
-function SimilarProcessCard({ id, similarity, result, time, type, resultColor = "emerald", onClick }: any) {
+function SimilarProcessCard({ id, similarity, result, time, type, resultColor = "emerald", perspective = null, onClick }: any) {
   const tone = resultTone(resultColor);
+  const normalizedResult = normalizeSearchText(result || "");
+  const isOpenOutcome = normalizedResult.includes("sem desfecho");
+  const isAuthorPositive = !isOpenOutcome && resultColor !== "red";
+  const userLeading =
+    perspective === "author" ? isAuthorPositive : perspective === "defendant" ? !isAuthorPositive : null;
+  const trendLabel =
+    userLeading == null
+      ? "Sem perspectiva definida"
+      : isOpenOutcome
+      ? "Sem desfecho comparável"
+      : userLeading
+      ? "Tendência favorável a você"
+      : "Tendência favorável à contraparte";
+
   return (
     <button
       type="button"
@@ -3850,6 +4282,9 @@ function SimilarProcessCard({ id, similarity, result, time, type, resultColor = 
           <p className="text-[10px] text-slate-300 font-bold uppercase mb-2">Tipo</p>
           <span className="text-xs font-bold text-slate-200">{type}</span>
         </div>
+      </div>
+      <div className="mt-3 rounded-md border border-cyan-500/25 bg-cyan-500/10 px-2.5 py-1.5 text-[11px] font-semibold text-cyan-100">
+        {trendLabel}
       </div>
     </button>
   );
@@ -3906,6 +4341,7 @@ function BenchmarkStat({ label, user, market, trend, trendColor, unit = "", onCl
   const tone = trendTone(trendColor);
   const userValue = formatBenchmarkMetricValue(user, unit);
   const marketValue = formatBenchmarkMetricValue(market, unit);
+  const leadershipLabel = trendColor === "emerald" ? "Seu escritório à frente" : "Mercado à frente";
   return (
     <button type="button" onClick={onClick} className="text-left md:text-center hover:opacity-95 transition-opacity">
       <p className="text-[10px] text-slate-300 font-bold uppercase tracking-widest mb-6">{label}</p>
@@ -3923,12 +4359,21 @@ function BenchmarkStat({ label, user, market, trend, trendColor, unit = "", onCl
       <div className={`inline-flex items-center gap-2 px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider ${tone}`}>
         <TrendingUp size={12} /> {trend}
       </div>
+      <p className="mt-2 text-[10px] font-semibold uppercase tracking-wide text-slate-300">{leadershipLabel}</p>
     </button>
   );
 }
 
 function ScenarioCard({ id, title, tag, tagColor, data, footer, onClick, isFocused = false }: any) {
   const tone = tagTone(tagColor);
+  const favorabilitySummary = data.reduce((found: FavorabilitySummary | null, item: { value_favorable_to_user?: string | null; value_favorable_to_counterparty?: string | null }) => {
+    if (found) return found;
+    return resolveFavorabilitySummary({
+      favorableToUser: item.value_favorable_to_user,
+      favorableToCounterparty: item.value_favorable_to_counterparty,
+    });
+  }, null);
+
   return (
     <button
       id={id}
@@ -3946,11 +4391,24 @@ function ScenarioCard({ id, title, tag, tagColor, data, footer, onClick, isFocus
           </h4>
           <span className={`text-[9px] font-black px-2 py-0.5 rounded uppercase tracking-widest ${tone.badge}`}>{tag}</span>
         </div>
+        {favorabilitySummary && (
+          <div className="mb-5 rounded-md border border-cyan-500/30 bg-cyan-500/10 px-2.5 py-1.5 text-[11px] font-semibold text-cyan-100">
+            {resolveLeadingLabel(favorabilitySummary)} ({formatPercentLabel(favorabilitySummary.userPct)} x {formatPercentLabel(favorabilitySummary.counterpartyPct)})
+          </div>
+        )}
         <div className="space-y-6 flex-1">
-          {data.map((d: any, i: number) => (
-            <div key={i} className="flex justify-between items-center">
-              <span className="text-xs text-slate-300 font-medium">{d.label}</span>
-              <span className={`text-sm font-black ${valueTone(d.color)}`}>{d.val}</span>
+          {data.map((d: { label: string; val: string; color?: string; value_favorable_to_user?: string | null; value_favorable_to_counterparty?: string | null }, i: number) => (
+            <div key={i} className="flex flex-col gap-1">
+              <div className="flex justify-between items-center">
+                <span className="text-xs text-slate-300 font-medium">{d.label}</span>
+                <span className={`text-sm font-black ${valueTone(d.color)}`}>{d.val}</span>
+              </div>
+              {(d.value_favorable_to_user != null || d.value_favorable_to_counterparty != null) && (
+                <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] font-semibold pl-0.5">
+                  {d.value_favorable_to_user != null && <span className="text-emerald-400">Favorável a você: {d.value_favorable_to_user}</span>}
+                  {d.value_favorable_to_counterparty != null && <span className="text-amber-400/90">Favorável à contraparte: {d.value_favorable_to_counterparty}</span>}
+                </div>
+              )}
             </div>
           ))}
         </div>
@@ -4217,8 +4675,35 @@ function FilterSelect({ label, value, options, onChange }: { label: string; valu
   );
 }
 
-function MetricCard({ title, value, subtitle, footer, color, updated, warning, onClick }: any) {
+function MetricCard({
+  title,
+  value,
+  subtitle,
+  footer,
+  color,
+  updated,
+  warning,
+  value_favorable_to_user,
+  value_favorable_to_counterparty,
+  onClick,
+}: {
+  title: string;
+  value: string;
+  subtitle: string;
+  footer: string;
+  color: string;
+  updated?: string | null;
+  warning?: string | null;
+  value_favorable_to_user?: string | null;
+  value_favorable_to_counterparty?: string | null;
+  onClick?: () => void;
+}) {
   const tone = metricTone(color);
+  const hasPerspective = value_favorable_to_user != null || value_favorable_to_counterparty != null;
+  const favorabilitySummary = resolveFavorabilitySummary({
+    favorableToUser: value_favorable_to_user,
+    favorableToCounterparty: value_favorable_to_counterparty,
+  });
   return (
     <button
       type="button"
@@ -4232,6 +4717,19 @@ function MetricCard({ title, value, subtitle, footer, color, updated, warning, o
           <h4 className="text-xs font-bold text-slate-300 uppercase tracking-wide">{title}</h4>
         </div>
         <div className="text-4xl font-black text-slate-100 mb-2">{value}</div>
+        {hasPerspective && (
+          <div className="flex flex-wrap gap-x-4 gap-y-1 mb-2 text-sm font-semibold">
+            {favorabilitySummary && (
+              <span className="text-cyan-300">{resolveLeadingLabel(favorabilitySummary)}</span>
+            )}
+            {value_favorable_to_user != null && (
+              <span className="text-emerald-400">Favorável a você: {value_favorable_to_user}</span>
+            )}
+            {value_favorable_to_counterparty != null && (
+              <span className="text-amber-400/90">Favorável à contraparte: {value_favorable_to_counterparty}</span>
+            )}
+          </div>
+        )}
         <div className="text-sm text-slate-300 font-medium">{subtitle}</div>
       </div>
 

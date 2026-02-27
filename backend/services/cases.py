@@ -641,6 +641,7 @@ def analyze_case_with_ai(
     db: Optional[Session] = None,
     user_id: Optional[UUID] = None,
     usage_operation: str = "cases.analyze_case_with_ai.responses",
+    user_party: Optional[str] = None,
 ) -> Tuple[CaseExtractionPayload, CaseScoresPayload]:
     truncated = text[:18000] if text else ""
     model = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
@@ -648,6 +649,14 @@ def analyze_case_with_ai(
         "Você é um analista jurídico no Brasil. "
         "Extraia dados estruturados e retorne APENAS JSON válido."
     )
+    perspective_instruction = ""
+    if user_party in ("author", "defendant"):
+        side = "Autor" if user_party == "author" else "Réu"
+        perspective_instruction = (
+            f"\n\nPerspectiva: o usuário que enviou este processo atua como **{side}**. "
+            "O campo 'success_probability' deve ser a probabilidade de vitória do AUTOR da ação (0 a 1). "
+            f"No campo 'ai_summary', quando falar de êxito ou resultado, deixe explícito se o cenário é favorável ao usuário (que é {side}) ou à contraparte."
+        )
     user_prompt = (
         "Analise o documento judicial abaixo e responda com JSON no formato:\n"
         "{\n"
@@ -666,6 +675,9 @@ def analyze_case_with_ai(
         '    "ai_summary": "..."\n'
         "  }\n"
         "}\n\n"
+        "Regra: success_probability = probabilidade de vitória do AUTOR da ação (valor entre 0 e 1)."
+        + perspective_instruction
+        + "\n\n"
         "Regra para o campo 'judge': indique APENAS o nome da autoridade RESPONSÁVEL pelo processo. "
         "Se houver várias autoridades (ex.: juiz de 1º grau e desembargador relator), escolha a que de fato "
         "decide o processo neste documento: em decisão de tribunal, use o relator/desembargador que assina; "

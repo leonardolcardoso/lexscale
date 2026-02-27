@@ -122,6 +122,7 @@ class ProcessCase(Base):
     ai_last_error = Column(Text, nullable=True)
     ai_next_retry_at = Column(DateTime(timezone=True), nullable=True, index=True)
     ai_processed_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    user_party = Column(Text, nullable=True)  # "author" | "defendant" (autor | réu)
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), index=True)
     updated_at = Column(
         DateTime(timezone=True),

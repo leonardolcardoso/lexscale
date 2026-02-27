@@ -42,7 +42,7 @@ from backend.schemas.cases import (
     UploadHistoryItem,
     UploadCaseResponse,
 )
-from backend.schemas.dashboard import DashboardData
+from backend.schemas.dashboard import CaseContextData, DashboardData
 from backend.schemas.public_data import (
     PublicDataSourceCreate,
     PublicDataSourceItem,
@@ -560,6 +560,16 @@ def _build_case_dashboard_snapshot(db: Session, user_id: uuid_pkg.UUID, case: Pr
     action_filter = (case.action_type or "").strip() or "Todos os Tipos"
     value_range_filter = _resolve_case_value_range_filter(case.claim_value)
 
+    user_party_val: Optional[str] = None
+    if case.user_party in ("author", "defendant"):
+        user_party_val = case.user_party
+    case_context = CaseContextData(
+        case_id=str(case.id),
+        process_number=case.process_number or "",
+        case_title=case.title,
+        user_party=user_party_val,
+    )
+
     return build_dashboard_data(
         db=db,
         user_id=user_id,
@@ -569,6 +579,7 @@ def _build_case_dashboard_snapshot(db: Session, user_id: uuid_pkg.UUID, case: Pr
         faixa_valor=value_range_filter,
         periodo="all",
         ai_client=None,
+        case_context=case_context,
     )
 
 
@@ -687,6 +698,7 @@ def _process_case_ai_enrichment(case_id: uuid_pkg.UUID) -> None:
                 db=db,
                 user_id=case.user_id,
                 usage_operation="cases.async_enrichment.responses",
+                user_party=case.user_party if case.user_party in ("author", "defendant") else None,
             )
         except Exception as exc:  # noqa: BLE001
             _set_case_ai_failure(db, case, f"Falha ao analisar caso com IA: {exc}", retryable=True)
@@ -1247,6 +1259,15 @@ def get_case_dashboard_context(
 
     stored_snapshot = _safe_dashboard_snapshot_payload(case.dashboard_snapshot)
     if stored_snapshot is not None:
+        user_party_val = case.user_party if case.user_party in ("author", "defendant") else None
+        case_ctx = CaseContextData(
+            case_id=str(case.id),
+            process_number=case.process_number or "",
+            case_title=case.title,
+            user_party=user_party_val,
+        )
+        if stored_snapshot.case_context is None:
+            stored_snapshot = stored_snapshot.model_copy(update={"case_context": case_ctx})
         return stored_snapshot
 
     if case.ai_status in {AI_STATUS_QUEUED, AI_STATUS_PROCESSING, AI_STATUS_FAILED_RETRYABLE}:
@@ -1296,10 +1317,23 @@ def list_upload_history(
     items: List[UploadHistoryItem] = []
     for case_item, document_item in rows:
         extracted_payload = _safe_case_extraction_payload(case_item.extracted_fields)
+        success_p = case_item.success_probability
+        user_party_val = case_item.user_party
+        favorable_user: Optional[float] = None
+        favorable_counterparty: Optional[float] = None
+        if success_p is not None and user_party_val:
+            prob = max(0.0, min(1.0, float(success_p)))
+            if user_party_val == "author":
+                favorable_user = round(prob * 100, 1)
+                favorable_counterparty = round((1 - prob) * 100, 1)
+            else:
+                favorable_counterparty = round(prob * 100, 1)
+                favorable_user = round((1 - prob) * 100, 1)
         items.append(
             UploadHistoryItem(
                 case_id=str(case_item.id),
                 process_number=case_item.process_number,
+                user_party=user_party_val,
                 case_title=case_item.title,
                 filename=document_item.filename if document_item else None,
                 content_type=document_item.content_type if document_item else None,
@@ -1327,6 +1361,8 @@ def list_upload_history(
                     complexity_score=case_item.complexity_score,
                     ai_summary=case_item.ai_summary,
                     rescisoria=_safe_rescisoria_payload(case_item.rescisoria_snapshot),
+                    favorable_to_user_pct=favorable_user,
+                    favorable_to_counterparty_pct=favorable_counterparty,
                 ),
             ),
         )
@@ -1440,6 +1476,7 @@ async def upload_case(
     action_type: Optional[str] = Form(default=None),
     claim_value: Optional[float] = Form(default=None),
     status: Optional[str] = Form(default=None),
+    user_party: Optional[str] = Form(default=None),  # "author" | "defendant"
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> UploadCaseResponse:
@@ -1469,6 +1506,14 @@ async def upload_case(
     )
 
     final_process_number = resolve_process_number(process_number_norm, extraction.process_number)
+    user_party_norm: Optional[str] = None
+    if user_party:
+        raw = (user_party or "").strip().lower()
+        if raw in ("author", "autor"):
+            user_party_norm = "author"
+        elif raw in ("defendant", "reu"):
+            user_party_norm = "defendant"
+
     case = ProcessCase(
         user_id=current_user.id,
         process_number=final_process_number,
@@ -1495,6 +1540,7 @@ async def upload_case(
         ai_last_error=None,
         ai_next_retry_at=datetime.now(timezone.utc),
         ai_processed_at=None,
+        user_party=user_party_norm if user_party_norm in ("author", "defendant") else None,
     )
     db.add(case)
     db.flush()

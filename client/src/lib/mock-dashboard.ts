@@ -595,6 +595,7 @@ export function buildMockUploadHistory(filters: DashboardFilters): UploadHistory
     salt: string;
     filename: string;
     contentType: string;
+    userParty: "author" | "defendant";
     aiStatus: UploadHistoryItem["ai_status"];
     aiAttempts: number;
     aiStage: string;
@@ -615,6 +616,7 @@ export function buildMockUploadHistory(filters: DashboardFilters): UploadHistory
       salt: "upload-1",
       filename: "peticao_inicial_trabalhista.pdf",
       contentType: "application/pdf",
+      userParty: "author",
       aiStatus: "completed",
       aiAttempts: 1,
       aiStage: "completed",
@@ -632,6 +634,7 @@ export function buildMockUploadHistory(filters: DashboardFilters): UploadHistory
       salt: "upload-2",
       filename: "contestacao_fornecedor.docx",
       contentType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      userParty: "defendant",
       aiStatus: "processing",
       aiAttempts: 1,
       aiStage: "analysis_ai",
@@ -643,6 +646,7 @@ export function buildMockUploadHistory(filters: DashboardFilters): UploadHistory
       salt: "upload-3",
       filename: "anexos_probatorios.zip",
       contentType: "application/zip",
+      userParty: "author",
       aiStatus: "failed_retryable",
       aiAttempts: 2,
       aiStage: "failed",
@@ -656,6 +660,7 @@ export function buildMockUploadHistory(filters: DashboardFilters): UploadHistory
       salt: "upload-4",
       filename: "sentenca_1_grau.pdf",
       contentType: "application/pdf",
+      userParty: "defendant",
       aiStatus: "manual_review",
       aiAttempts: 1,
       aiStage: "publication",
@@ -668,6 +673,7 @@ export function buildMockUploadHistory(filters: DashboardFilters): UploadHistory
       salt: "upload-5",
       filename: "recurso_apelacao_cliente.pdf",
       contentType: "application/pdf",
+      userParty: "author",
       aiStatus: "completed",
       aiAttempts: 1,
       aiStage: "completed",
@@ -693,6 +699,13 @@ export function buildMockUploadHistory(filters: DashboardFilters): UploadHistory
     const createdAt = new Date(now.getTime() - template.elapsedHours * 60 * 60 * 1000);
     const processedAt = template.processedHours ? new Date(now.getTime() - template.processedHours * 60 * 60 * 1000) : null;
     const retryAt = template.needsRetryAtHours ? new Date(now.getTime() + template.needsRetryAtHours * 60 * 60 * 1000) : null;
+    const successProbability = typeof template.successProbability === "number" ? Math.max(0, Math.min(1, template.successProbability)) : null;
+    const favorableToUserPct = successProbability == null
+      ? null
+      : template.userParty === "author"
+      ? round(successProbability * 100, 1)
+      : round((1 - successProbability) * 100, 1);
+    const favorableToCounterpartyPct = successProbability == null ? null : round(100 - (favorableToUserPct ?? 0), 1);
 
     const keyFacts = [
       `Peça vinculada ao processo ${processNumber}.`,
@@ -703,6 +716,7 @@ export function buildMockUploadHistory(filters: DashboardFilters): UploadHistory
     return {
       case_id: `demo-case-${localSeed.toString(16).slice(0, 12)}`,
       process_number: processNumber,
+      user_party: template.userParty,
       case_title: `${actionType} - ${tribunal}`,
       filename: template.filename,
       content_type: template.contentType,
@@ -753,6 +767,8 @@ export function buildMockUploadHistory(filters: DashboardFilters): UploadHistory
           (template.aiStatus === "completed"
             ? buildAiSummary(actionType, tribunal, claimValue)
             : null),
+        favorable_to_user_pct: favorableToUserPct,
+        favorable_to_counterparty_pct: favorableToCounterpartyPct,
       },
     };
   });

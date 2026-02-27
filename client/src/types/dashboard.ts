@@ -6,10 +6,18 @@ export type DashboardFilters = {
   periodo: string;
 };
 
+export type CaseContext = {
+  case_id: string;
+  process_number: string;
+  case_title?: string | null;
+  user_party?: "author" | "defendant" | null;
+};
+
 export type DashboardData = {
   updated_label: string;
   filters: DashboardFilters;
   generated_at: string;
+  case_context?: CaseContext | null;
   visao_geral: {
     stats: Array<{
       title: string;
@@ -19,6 +27,8 @@ export type DashboardData = {
       color: string;
       updated?: string | null;
       warning?: string | null;
+      value_favorable_to_user?: string | null;
+      value_favorable_to_counterparty?: string | null;
     }>;
     scores: Array<{
       title: string;
@@ -94,7 +104,13 @@ export type DashboardData = {
       title: string;
       tag: string;
       tag_color: string;
-      data: Array<{ label: string; val: string; color?: string | null }>;
+      data: Array<{
+        label: string;
+        val: string;
+        color?: string | null;
+        value_favorable_to_user?: string | null;
+        value_favorable_to_counterparty?: string | null;
+      }>;
       footer: string;
       detail_title?: string;
       detail_summary?: string;
@@ -247,11 +263,14 @@ export type UploadHistoryGeneratedData = {
   complexity_score?: number | null;
   ai_summary?: string | null;
   rescisoria?: RescisoriaAnalysis | null;
+  favorable_to_user_pct?: number | null;
+  favorable_to_counterparty_pct?: number | null;
 };
 
 export type UploadHistoryItem = {
   case_id: string;
   process_number: string;
+  user_party?: "author" | "defendant" | null;
   case_title?: string | null;
   filename?: string | null;
   content_type?: string | null;
