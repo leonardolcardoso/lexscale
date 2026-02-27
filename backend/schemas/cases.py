@@ -21,6 +21,7 @@ class CaseExtractionPayload(BaseModel):
     parties: Dict[str, Any] = Field(default_factory=dict)
     key_facts: List[str] = Field(default_factory=list)
     deadlines: List[DeadlinePayload] = Field(default_factory=list)
+    authority_display: Optional[str] = None
 
 
 class CaseScoresPayload(BaseModel):

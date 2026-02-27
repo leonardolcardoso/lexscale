@@ -228,6 +228,7 @@ export type UploadHistoryGeneratedData = {
     title?: string | null;
     tribunal?: string | null;
     judge?: string | null;
+    authority_display?: string | null;
     action_type?: string | null;
     claim_value?: number | null;
     status?: string | null;

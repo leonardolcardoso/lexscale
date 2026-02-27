@@ -612,6 +612,23 @@ function formatCurrencyBRL(value?: number | null): string {
   }).format(value);
 }
 
+/** Formata número para exibição no campo Valor causa (R$): "100.000,00" */
+function formatClaimValueForInput(value?: number | null): string {
+  if (typeof value !== "number" || !Number.isFinite(value)) return "";
+  return new Intl.NumberFormat("pt-BR", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(value);
+}
+
+/** Converte valor do campo (pt-BR ou número) para string numérica para envio à API. */
+function claimValueForSubmit(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed) return "";
+  const parsed = Number(trimmed.replace(/\./g, "").replace(",", ".").replace(/[^\d.-]/g, ""));
+  return Number.isFinite(parsed) ? String(parsed) : trimmed;
+}
+
 function formatContentTypeLabel(contentType?: string | null): string {
   if (!contentType || typeof contentType !== "string") return "Não informado";
   const normalized = contentType.toLowerCase();
@@ -991,13 +1008,14 @@ export default function Dashboard() {
 
   const applyExtractedUploadForm = useCallback((extracted: UploadCaseResponse["extracted"] | undefined | null, processNumberFromPayload?: string) => {
     const safeExtracted = extracted || {};
-    const { textValue: extractedClaimValue } = parseExtractedClaimValue((safeExtracted as { claim_value?: unknown }).claim_value);
+    const { textValue: extractedClaimRaw, numericValue: extractedClaimNumeric } = parseExtractedClaimValue((safeExtracted as { claim_value?: unknown }).claim_value);
+    const claimDisplay = extractedClaimNumeric != null ? formatClaimValueForInput(extractedClaimNumeric) : extractedClaimRaw;
     setUploadForm((previous) => ({
       process_number: safeExtracted.process_number || processNumberFromPayload || previous.process_number,
       tribunal: safeExtracted.tribunal || previous.tribunal,
-      judge: safeExtracted.judge || previous.judge,
+      judge: (safeExtracted as { authority_display?: string | null }).authority_display || safeExtracted.judge || previous.judge,
       action_type: safeExtracted.action_type || previous.action_type,
-      claim_value: extractedClaimValue || previous.claim_value,
+      claim_value: claimDisplay || previous.claim_value,
     }));
   }, []);
 
@@ -1051,7 +1069,7 @@ export default function Dashboard() {
       if (uploadForm.tribunal.trim()) formData.append("tribunal", uploadForm.tribunal.trim());
       if (uploadForm.judge.trim()) formData.append("judge", uploadForm.judge.trim());
       if (uploadForm.action_type.trim()) formData.append("action_type", uploadForm.action_type.trim());
-      if (uploadForm.claim_value.trim()) formData.append("claim_value", uploadForm.claim_value.trim());
+      if (uploadForm.claim_value.trim()) formData.append("claim_value", claimValueForSubmit(uploadForm.claim_value));
 
       try {
         const res = await fetch("/api/cases/upload", {
@@ -1880,14 +1898,17 @@ export default function Dashboard() {
                     />
                     {extractPreviewMutation.isPending ? <p className="mt-1 text-[11px] text-cyan-300">Extraindo campos automaticamente...</p> : null}
                   </div>
-                  <InputField label="Número do processo" value={uploadForm.process_number} onChange={(value) => setUploadForm((s) => ({ ...s, process_number: value }))} />
-                  <InputField label="Tribunal" value={uploadForm.tribunal} onChange={(value) => setUploadForm((s) => ({ ...s, tribunal: value }))} />
-                  <InputField label="Juiz" value={uploadForm.judge} onChange={(value) => setUploadForm((s) => ({ ...s, judge: value }))} />
-                  <InputField label="Tipo de ação" value={uploadForm.action_type} onChange={(value) => setUploadForm((s) => ({ ...s, action_type: value }))} />
+                  <InputField label="Número do processo" value={uploadForm.process_number} onChange={(value) => setUploadForm((s) => ({ ...s, process_number: value }))} placeholder="Ex.: 0000000-00.2025.4.01.0000" />
+                  <InputField label="Tribunal" value={uploadForm.tribunal} onChange={(value) => setUploadForm((s) => ({ ...s, tribunal: value }))} placeholder="Ex.: TRF1, TJSP, TRT 2ª Região" />
+                  <div className="md:col-span-2">
+                    <InputField label="Autoridade Responsável" value={uploadForm.judge} onChange={(value) => setUploadForm((s) => ({ ...s, judge: value }))} placeholder="Ex.: Juiz (1º grau): Nome; Des. Federal / Relator: Nome" />
+                  </div>
                 </div>
                 <div className="mt-3 grid items-end gap-3 md:grid-cols-6">
-                  <InputField label="Valor causa (R$)" value={uploadForm.claim_value} onChange={(value) => setUploadForm((s) => ({ ...s, claim_value: value }))} />
-                  <div className="flex justify-stretch md:col-span-5 md:justify-end">
+                  <div className="hidden md:block md:col-span-2" aria-hidden />
+                  <InputField label="Valor causa (R$)" value={uploadForm.claim_value} onChange={(value) => setUploadForm((s) => ({ ...s, claim_value: value }))} placeholder="Ex.: 50.000,00" />
+                  <InputField label="Tipo de ação" value={uploadForm.action_type} onChange={(value) => setUploadForm((s) => ({ ...s, action_type: value }))} placeholder="Ex.: Ação de conhecimento, Mandado de segurança" />
+                  <div className="flex justify-stretch md:col-span-2 md:justify-end">
                     <Button
                       onClick={() => uploadMutation.mutate()}
                       disabled={uploadMutation.isPending || extractPreviewMutation.isPending || !uploadFile}
@@ -3118,7 +3139,7 @@ function UploadHistoryView({
               { label: "Formato", value: formatContentTypeLabel(item.content_type) },
               { label: "Nº do processo", value: extracted.process_number || item.process_number || "--" },
               { label: "Tribunal", value: extracted.tribunal || item.tribunal || "--" },
-              { label: "Juiz", value: extracted.judge || item.judge || "--" },
+              { label: "Autoridade Responsável", value: extracted.authority_display || extracted.judge || item.judge || "--" },
               { label: "Tipo da ação", value: extracted.action_type || item.action_type || "--" },
               {
                 label: "Valor da causa",
@@ -3136,6 +3157,7 @@ function UploadHistoryView({
             ].filter((value) => typeof value === "number" && Number.isFinite(value)).length;
             const rescisoria = item.generated_data?.rescisoria;
             const isRescisoriaCandidate = typeof rescisoria?.viability_score === "number" && rescisoria.viability_score >= 70;
+            const authorityDisplay = item.generated_data?.extracted?.authority_display ?? null;
 
             const isExpanded = expandedCaseIds.includes(item.case_id);
             const isDeletingThis = isDeletingCaseId === item.case_id;
@@ -3191,7 +3213,7 @@ function UploadHistoryView({
 
                 <div className="mt-3 flex flex-wrap gap-2 text-[11px] text-slate-700 dark:text-slate-300">
                   <span className="rounded-md border border-slate-300 bg-slate-100 px-2 py-0.5 dark:border-slate-700 dark:bg-slate-800/60">Tribunal: {item.tribunal || "--"}</span>
-                  <span className="rounded-md border border-slate-300 bg-slate-100 px-2 py-0.5 dark:border-slate-700 dark:bg-slate-800/60">Juiz: {item.judge || "--"}</span>
+                  <span className="rounded-md border border-slate-300 bg-slate-100 px-2 py-0.5 dark:border-slate-700 dark:bg-slate-800/60" title={authorityDisplay || undefined}>Autoridade: {(authorityDisplay || item.judge || "--").length > 50 ? `${(authorityDisplay || item.judge || "--").slice(0, 47)}...` : (authorityDisplay || item.judge || "--")}</span>
                   <span className="rounded-md border border-slate-300 bg-slate-100 px-2 py-0.5 dark:border-slate-700 dark:bg-slate-800/60">Tipo: {item.action_type || "--"}</span>
                   <span className="rounded-md border border-slate-300 bg-slate-100 px-2 py-0.5 dark:border-slate-700 dark:bg-slate-800/60">Valor: {formatCurrencyBRL(item.claim_value)}</span>
                   <span className="rounded-md border border-cyan-300 bg-cyan-100 px-2 py-0.5 text-cyan-800 dark:border-cyan-500/35 dark:bg-cyan-500/10 dark:text-cyan-200">Progresso IA: {stageProgress}%</span>
@@ -3233,9 +3255,17 @@ function UploadHistoryView({
                       </p>
                       <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
                         {analyzedInputFields.map((field) => (
-                          <div key={field.label} className="rounded-md border border-cyan-200/80 bg-white/85 p-2 dark:border-cyan-500/20 dark:bg-slate-900/40">
+                          <div key={field.label} className={`rounded-md border border-cyan-200/80 bg-white/85 p-2 dark:border-cyan-500/20 dark:bg-slate-900/40 ${field.label === "Autoridade Responsável" ? "sm:col-span-2 xl:col-span-4" : ""}`}>
                             <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-600 dark:text-slate-400">{field.label}</p>
-                            <p className="mt-1 break-all text-xs font-medium text-slate-800 dark:text-slate-200">{field.value}</p>
+                            {field.label === "Autoridade Responsável" && field.value !== "--" && field.value.includes("; ") ? (
+                              <div className="mt-1.5 space-y-1">
+                                {field.value.split("; ").map((line, i) => (
+                                  <p key={i} className="text-xs font-medium text-slate-800 dark:text-slate-200 rounded bg-slate-100 dark:bg-slate-800/50 px-2 py-1">{line.trim()}</p>
+                                ))}
+                              </div>
+                            ) : (
+                              <p className="mt-1 break-all text-xs font-medium text-slate-800 dark:text-slate-200">{field.value}</p>
+                            )}
                           </div>
                         ))}
                       </div>
@@ -3778,13 +3808,14 @@ function SimilarProcessDetailContent({ detail }: { detail: SimilarProcessDetail 
   );
 }
 
-function InputField({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {
+function InputField({ label, value, onChange, placeholder }: { label: string; value: string; onChange: (value: string) => void; placeholder?: string }) {
   return (
     <div className="flex flex-col gap-1">
       <label className="text-xs font-semibold text-slate-300 uppercase">{label}</label>
       <input
         value={value}
         onChange={(event) => onChange(event.target.value)}
+        placeholder={placeholder}
         className="h-[38px] px-3 border border-slate-700 rounded-md bg-slate-900/70 text-sm text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-cyan-500/40"
       />
     </div>

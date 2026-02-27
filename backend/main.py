@@ -712,6 +712,8 @@ def _process_case_ai_enrichment(case_id: uuid_pkg.UUID) -> None:
             case_embedding = None
 
         final_extraction = extraction or fallback_extraction
+        if fallback_extraction and getattr(fallback_extraction, "authority_display", None):
+            final_extraction = final_extraction.model_copy(update={"authority_display": fallback_extraction.authority_display})
         final_process_number = resolve_process_number(case.process_number, final_extraction.process_number)
 
         success_probability = _normalize_probability(scores.success_probability)
@@ -1354,8 +1356,16 @@ async def extract_case_preview(
     try:
         with NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
             temp_file.write(payload)
+            temp_file.flush()
+            os.fsync(temp_file.fileno())
             temporary_path = Path(temp_file.name)
-        extracted_text = extract_text_from_document(temporary_path, original_filename, file.content_type)
+        try:
+            extracted_text = extract_text_from_document(
+                temporary_path, original_filename, file.content_type
+            )
+        except Exception as e:
+            logger.warning("Falha ao extrair texto do documento %s: %s", original_filename, e)
+            extracted_text = ""
     finally:
         if temporary_path is not None and temporary_path.exists():
             temporary_path.unlink(missing_ok=True)
@@ -1375,6 +1385,47 @@ async def extract_case_preview(
         judge=judge_norm,
         action_type=action_type_norm,
         claim_value=claim_value,
+    )
+    # Garantia: se temos authority_display mas judge ficou null, preenche judge a partir do display
+    if extraction.judge is None and extraction.authority_display and ": " in extraction.authority_display:
+        first_part = extraction.authority_display.split(";")[0].strip()
+        if ": " in first_part:
+            extraction = extraction.model_copy(
+                update={"judge": first_part.split(": ", 1)[1].strip()[:120]}
+            )
+    # Último recurso no endpoint: texto longo contém assinatura mas extração não achou (ex.: encoding)
+    if extraction.judge is None and len(extracted_text) > 10000:
+        text_lower = extracted_text.lower()
+        for marker in ("assinado eletronicamente por:", "assinado por:"):
+            idx = text_lower.find(marker)
+            if idx != -1:
+                chunk = extracted_text[idx + len(marker) : idx + len(marker) + 100]
+                line = chunk.split("\n")[0].split("\r")[0].strip()
+                line = re.sub(r"\s*\d{1,2}/\d{1,2}/\d{4}.*$", "", line).strip()
+                if len(line) > 4 and not any(c.isdigit() for c in line[:50]):
+                    extraction = extraction.model_copy(
+                        update={"judge": line[:120], "authority_display": f"Assinatura: {line[:120]}"}
+                    )
+                    break
+        if extraction.judge is None and "desembargador federal" in text_lower:
+            idx = text_lower.find("desembargador federal")
+            skip = len("desembargador federal")
+            after = extracted_text[idx + skip : idx + skip + 150].strip()
+            first_line = after.split("\n")[0].split("\r")[0].strip()
+            first_line = re.sub(r"\s*relator\s*$", "", first_line, flags=re.IGNORECASE).strip()
+            if len(first_line) > 4 and not any(c.isdigit() for c in first_line[:50]):
+                extraction = extraction.model_copy(
+                    update={
+                        "judge": first_line[:120],
+                        "authority_display": f"Desembargador Federal / Relator: {first_line[:120]}",
+                    }
+                )
+    logger.info(
+        "extract preview: file=%s payload=%s chars extracted=%s judge=%s",
+        original_filename,
+        len(payload),
+        len(extracted_text),
+        extraction.judge,
     )
     final_process_number = resolve_process_number(process_number_norm, extraction.process_number)
     return CaseExtractionPreviewResponse(process_number=final_process_number, extracted=extraction)

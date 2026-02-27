@@ -171,7 +171,7 @@ def _looks_like_person_name(candidate: str) -> bool:
     if not candidate:
         return False
     cleaned = re.sub(r"\s+", " ", candidate).strip(" .,:;-")
-    if len(cleaned) < 6 or len(cleaned) > 120:
+    if len(cleaned) < 4 or len(cleaned) > 120:
         return False
     if any(char.isdigit() for char in cleaned):
         return False
@@ -192,6 +192,11 @@ def _looks_like_person_name(candidate: str) -> bool:
         "substituto",
         "instancia",
         "processo",
+        "relator",
+        "revisor",
+        "imprimir",
+        "gerar",
+        "documento",
     }
     lowered_tokens = [_normalize_text_for_match(token) for token in tokens]
     if any(token in blocked for token in lowered_tokens):
@@ -202,44 +207,226 @@ def _looks_like_person_name(candidate: str) -> bool:
     return len(meaningful) >= 2
 
 
+# Partículas para manter em minúsculo na exibição do nome (ex.: "João da Silva")
+_NAME_PARTICLES = frozenset({"de", "da", "do", "dos", "das", "e"})
+
+
+def _normalize_text_for_authority_search(text: str) -> str:
+    """Normaliza texto antes das regex: espaços Unicode -> espaço, para PDFs com caracteres especiais."""
+    if not text:
+        return text
+    # Espaços Unicode comuns em PDFs (NBSP, thin space, etc.) -> espaço normal
+    for char in ("\u00a0", "\u2003", "\u2002", "\u2009", "\u202f", "\u205f"):
+        text = text.replace(char, " ")
+    return unicode_normalize("NFC", text)
+
+
+def _normalize_person_name_display(name: str) -> str:
+    """Normaliza nome para exibição: DANIEL LACERDA PEREIRA -> Daniel Lacerda Pereira; partículas em minúsculo."""
+    if not name or not name.strip():
+        return name.strip()
+    words = re.split(r"\s+", name.strip())
+    result = []
+    for w in words:
+        if not w:
+            continue
+        low = w.lower()
+        if low in _NAME_PARTICLES:
+            result.append(low)
+        else:
+            # Primeira letra maiúscula, resto minúsculo (preserva hífens: Maria-Clara)
+            result.append(w[0].upper() + (w[1:].lower() if len(w) > 1 else ""))
+    return " ".join(result)
+
+
 # Zonas onde o nome do juiz costuma aparecer (evita varrer o documento inteiro em arquivos grandes).
+# Aplica-se a DIVERSOS tipos de documento: TJ, TRF, TRT, TST, TSE, PJe, e-Proc, PDFs escaneados, etc.
 _JUDGE_HEAD_CHARS = 22_000   # início: capa, cabeçalho, decisão
-_JUDGE_TAIL_CHARS = 14_000   # final: assinaturas, "À disposição", "Assinado por"
+_JUDGE_TAIL_CHARS = 20_000   # final: assinaturas (varia por sistema: PJe tem URLs no fim; TJ/TRT outros formatos)
+
+# Referência para extração de autoridades (pesquisa em documentos judiciais brasileiros – múltiplos cenários):
+# - Justiça Estadual (TJ): Juiz(a) de Direito, Juiz(a) da Xª Vara Cível/Criminal/Fazenda/Família,
+#   Desembargador(a), Des., Relator(a), Rel., Revisor(a), Rev., Presidente, Pres., Corregedor.
+# - Justiça Federal: Juiz(a) Federal (Substituto/Convocado/Titular), Juiz(a) da Xª Vara Federal,
+#   Desembargador Federal, Ministro(a) (STF, STJ, TST, TSE).
+# - Justiça do Trabalho: Juiz(a) do Trabalho, Vara do Trabalho, TRT.
+# - Assinaturas: "Assinado por", "Assinado eletronicamente por" (PJe), "À disposição", "Dado e passado",
+#   "Brasília/DF" + data + nome, Dr./Dra. + nome. Cargo e nome constam na assinatura eletrônica (e-Proc).
+# - Abreviações padronizadas (STJ/STF/TRTs etc.): Min.=Ministro, Des.=Desembargador, Rel.=Relator, Rev.=Revisor.
+
+# (regex, rótulo do cargo para exibir como "Cargo: Nome")
+_JUDGE_PATTERNS: List[Tuple[str, str]] = [
+    (r"(?:Ju[ií]z(?:a)?(?:\s+Federal)?(?:\s+Convocado)?(?:\s+Substituto)?(?:\s+Titular)?|Magistrad[oa]|Relator(?:a)?|Desembargador(?:a)?(?:\s+Federal)?|Ministro(?:a)?)\s*[:\-]\s*([A-ZÀ-Ý][A-Za-zÀ-ÿ'.-]*(?:\s+(?:[A-ZÀ-Ý][A-Za-zÀ-ÿ'.-]*|de|da|do|dos|das|e)){1,8})", "Autoridade"),
+    (r"(?:Assinado\s+(?:eletronicamente\s+)?por|Assinado\s+por)\s*[:\-]\s*\n?\s*([A-ZÀ-Ý][A-Za-zÀ-ÿ'.-]*(?:\s+(?:[A-ZÀ-Ý][A-Za-zÀ-ÿ'.-]*|de|da|do|dos|das|e)){1,8})", "Assinatura"),
+    (r"(?:Ju[ií]z(?:a)?\s+Federal)\s+([A-ZÀ-Ý][A-Za-zÀ-ÿ'.-]*(?:\s+(?:[A-ZÀ-Ý][A-Za-zÀ-ÿ'.-]*|de|da|do|dos|das|e)){1,8})(?:\s*[,\.]|$)", "Juiz Federal"),
+    (r"(?:Ju[ií]z(?:a)?\s+de\s+Direito)\s*[:\-]?\s*([A-ZÀ-Ý][A-Za-zÀ-ÿ'.-]*(?:\s+(?:[A-ZÀ-Ý][A-Za-zÀ-ÿ'.-]*|de|da|do|dos|das|e)){1,8})(?:\s*[,\.\n]|$)", "Juiz de Direito"),
+    (r"(?:À\s+disposi[cç][aã]o|À\s+disposicao)[,\s]+([A-ZÀ-Ý][A-Za-zÀ-ÿ'.-]*(?:\s+(?:[A-ZÀ-Ý][A-Za-zÀ-ÿ'.-]*|de|da|do|dos|das|e)){1,8})", "À disposição"),
+    (r"(?:Dado\s+e\s+passado|Lavrado\s+em)[^.]*?[,\s]+([A-ZÀ-Ý][A-Za-zÀ-ÿ'.-]*(?:\s+(?:[A-ZÀ-Ý][A-Za-zÀ-ÿ'.-]*|de|da|do|dos|das|e)){1,8})", "Autoridade"),
+    (r"(?:Dr\.?|Dra\.?)\s+([A-ZÀ-Ý][A-Za-zÀ-ÿ'.-]*(?:\s+(?:[A-ZÀ-Ý][A-Za-zÀ-ÿ'.-]*|de|da|do|dos|das|e)){1,6})\s*(?:\n|,|\s+Juiz|\s+Ju[ií]za)", "Autoridade"),
+    (r"Juiz\s+(?:da|de)\s+\d+[ªa]?\s+Vara\s+Federal[^.]*?[:\-]\s*([A-ZÀ-Ý][A-Za-zÀ-ÿ'.-]*(?:\s+(?:[A-ZÀ-Ý][A-Za-zÀ-ÿ'.-]*|de|da|do|dos|das|e)){1,8})", "Juiz da Vara Federal"),
+    (r"Juiz\s+(?:da|de)\s+\d+[ªa]?\s+Vara\s+(?:C[ií]vel|Criminal|Fazenda|Fam[ií]lia)[^.]*?[:\-]?\s*([A-ZÀ-Ý][A-Za-zÀ-ÿ'.-]*(?:\s+(?:[A-ZÀ-Ý][A-Za-zÀ-ÿ'.-]*|de|da|do|dos|das|e)){1,8})", "Juiz da Vara"),
+    (r"(?:Ju[ií]z(?:a)?\s+do\s+Trabalho)\s*[:\-]?\s*([A-ZÀ-Ý][A-Za-zÀ-ÿ'.-]*(?:\s+(?:[A-ZÀ-Ý][A-Za-zÀ-ÿ'.-]*|de|da|do|dos|das|e)){1,8})(?:\s*[,\.\n]|$)", "Juiz do Trabalho"),
+    (r"([A-ZÀ-Ý][a-zà-ÿ]+(?:\s+[A-ZÀ-Ý][a-zà-ÿ]+){2,5})\s*\n\s*Ju[ií]z\s+Federal(?:\s+Substituto)?(?:\s+da\s+\d+[ªa]?\s+Vara)?", "Juiz Federal (1º grau)"),
+    (r"([A-ZÀ-Ý][a-zà-ÿ]+(?:\s+[A-ZÀ-Ý][a-zà-ÿ]+){2,5})\s*\n\s*Ju[ií]z(?:a)?\s+de\s+Direito(?:\s+da\s+\d+[ªa]?\s+Vara)?", "Juiz de Direito (1º grau)"),
+    # Tribunal (TRF/TJ): "Desembargador Federal NAME" ou "Desembargador Federal\nNAME\nRelator" (PJe e outros)
+    (r"Desembargador\s+Federal\s*\n\s*([A-ZÀ-Ý][A-Za-zÀ-ÿ'.-]*(?:\s+[A-ZÀ-Ý][A-Za-zÀ-ÿ'.-]*){1,6})\s*(?:\n|\r|$)", "Desembargador Federal / Relator"),
+    (r"Desembargador\s+Federal\s+([A-ZÀ-Ý][A-Za-zÀ-ÿ'.-]*(?:\s+[A-ZÀ-Ý][A-Za-zÀ-ÿ'.-]*){1,6}?)\s*(?:\n|\r|\s*Relator|$)", "Desembargador Federal / Relator"),
+    (r"Desembargador(?:a)?\s+(?!Federal)([A-ZÀ-Ý][A-Za-zÀ-ÿ'.-]*(?:\s+[A-ZÀ-Ý][A-Za-zÀ-ÿ'.-]*){1,6})\s*(?:\n|\r|\s*Rel\.|$)", "Desembargador"),
+    (r"Des\.\s+([A-ZÀ-Ý][A-Za-zÀ-ÿ'.-]*(?:\s+[A-ZÀ-Ý][A-Za-zÀ-ÿ'.-]*){1,6})(?:\s*[,\.\n]|\s+-\s+Rel\.|$)", "Desembargador"),
+    (r"Min\.\s+([A-ZÀ-Ý][A-Za-zÀ-ÿ'.-]*(?:\s+[A-ZÀ-Ý][A-Za-zÀ-ÿ'.-]*){1,6})(?:\s*[,\.\n]|\s+-\s+Rel\.|$)", "Ministro"),
+    (r"(?:Rel\.|Revisor)\s+[:\-]?\s*([A-ZÀ-Ý][A-Za-zÀ-ÿ'.-]*(?:\s+(?:[A-ZÀ-Ý][A-Za-zÀ-ÿ'.-]*|de|da|do|dos|das|e)){1,6})", "Relator / Revisor"),
+    (r"Juiz\s+(?:da|de)\s+(?:da\s+)?\d+[ªa]?\s+(?:C[aâ]mara|Turma)[^.]*?[:\-]\s*([A-ZÀ-Ý][A-Za-zÀ-ÿ'.-]*(?:\s+(?:[A-ZÀ-Ý][A-Za-zÀ-ÿ'.-]*|de|da|do|dos|das|e)){1,8})", "Juiz da Câmara / Turma"),
+    (r"Presidente\s*[:\-]\s*([A-ZÀ-Ý][A-Za-zÀ-ÿ'.-]*(?:\s+(?:[A-ZÀ-Ý][A-Za-zÀ-ÿ'.-]*|de|da|do|dos|das|e)){1,6})", "Presidente"),
+]
+
+# Cargos que indicam autoridade responsável pelo processo (decisão do tribunal).
+# Cobrem 1º grau (juiz da causa) e 2º grau / tribunais (relator, desembargador, ministro).
+_PRIMARY_ROLES_FROM_TAIL = frozenset({"Desembargador Federal / Relator", "Assinatura", "Desembargador", "Ministro", "Relator / Revisor"})
+_PRIMARY_ROLES_FROM_HEAD = frozenset({
+    "Juiz Federal (1º grau)", "Juiz de Direito (1º grau)", "Juiz da Vara Federal", "Juiz da Vara",
+    "Juiz Federal", "Juiz de Direito", "Juiz do Trabalho",
+})
 
 
-def _extract_judge_name(text: str) -> Optional[str]:
+def _extract_authorities(text: str) -> Tuple[Optional[str], Optional[str]]:
+    """Retorna (primary_name, display_string). primary = autoridade responsável pelo processo (para IA/filtros)."""
     if not text or not text.strip():
-        return None
+        return None, None
+    text = _normalize_text_for_authority_search(text)
 
-    patterns = [
-        r"(?:Ju[ií]z(?:a)?(?:\s+Federal)?(?:\s+Convocado)?|Magistrad[oa]|Relator(?:a)?|Desembargador(?:a)?(?:\s+Federal)?|Ministro(?:a)?)\s*[:\-]\s*([A-ZÀ-Ý][A-Za-zÀ-ÿ'.-]*(?:\s+(?:[A-ZÀ-Ý][A-Za-zÀ-ÿ'.-]*|de|da|do|dos|das|e)){1,8})",
-        r"Assinado\s+por\s*[:\-]\s*([A-ZÀ-Ý][A-Za-zÀ-ÿ'.-]*(?:\s+(?:[A-ZÀ-Ý][A-Za-zÀ-ÿ'.-]*|de|da|do|dos|das|e)){1,8})",
-        r"(?:Ju[ií]z(?:a)?\s+Federal)\s+([A-ZÀ-Ý][A-Za-zÀ-ÿ'.-]*(?:\s+(?:[A-ZÀ-Ý][A-Za-zÀ-ÿ'.-]*|de|da|do|dos|das|e)){1,8})(?:\s*[,\.]|$)",
-        r"(?:À\s+disposi[cç][aã]o|À\s+disposicao)[,\s]+([A-ZÀ-Ý][A-Za-zÀ-ÿ'.-]*(?:\s+(?:[A-ZÀ-Ý][A-Za-zÀ-ÿ'.-]*|de|da|do|dos|das|e)){1,8})",
-        r"(?:Dr\.?|Dra\.?)\s+([A-ZÀ-Ý][A-Za-zÀ-ÿ'.-]*(?:\s+(?:[A-ZÀ-Ý][A-Za-zÀ-ÿ'.-]*|de|da|do|dos|das|e)){1,6})\s*(?:\n|,|\s+Juiz|\s+Ju[ií]za)",
-        r"Juiz\s+(?:da|de)\s+\d+[ªa]?\s+Vara\s+Federal[^.]*?[:\-]\s*([A-ZÀ-Ý][A-Za-zÀ-ÿ'.-]*(?:\s+(?:[A-ZÀ-Ý][A-Za-zÀ-ÿ'.-]*|de|da|do|dos|das|e)){1,8})",
-    ]
+    collected: List[Tuple[str, str, bool]] = []  # (role_label, name, from_tail)
 
-    def search_in(zone: str) -> Optional[str]:
-        for pattern in patterns:
+    def search_in(zone: str, from_tail: bool) -> None:
+        for pattern, role_label in _JUDGE_PATTERNS:
             for found in re.finditer(pattern, zone, flags=re.IGNORECASE | re.MULTILINE):
                 candidate = re.sub(r"\s+", " ", found.group(1)).strip(" .,:;-")
+                # evita que "Relator" / "Revisor" venham colados ao nome
+                for suffix in (" Relator", " Revisor", " Relatora", " Revisora"):
+                    if candidate.endswith(suffix):
+                        candidate = candidate[: -len(suffix)].strip()
+                        break
                 if _looks_like_person_name(candidate):
-                    return candidate[:140]
-        return None
+                    collected.append((role_label, _normalize_person_name_display(candidate)[:120], from_tail))
+                    break
 
     head = text[:_JUDGE_HEAD_CHARS]
-    result = search_in(head)
-    if result:
-        return result
-
+    search_in(head, from_tail=False)
     if len(text) > _JUDGE_TAIL_CHARS:
         tail = text[-_JUDGE_TAIL_CHARS:]
-        result = search_in(tail)
-        if result:
-            return result
+        search_in(tail, from_tail=True)
 
-    return None
+    # Fallback: se não achou nada no tail (ex.: PDF com muitas URLs no fim), usa um tail maior
+    if not collected and len(text) > _JUDGE_TAIL_CHARS:
+        larger_tail_size = min(len(text), 40_000)
+        if larger_tail_size > _JUDGE_TAIL_CHARS:
+            search_in(text[-larger_tail_size:], from_tail=True)
+    # Último recurso: em documentos com estrutura atípica (tail muito longo, assinatura no meio, etc.),
+    # procura em TODO o texto pelos padrões mais comuns em qualquer ramo (TJ, TRF, TRT, PJe, e-Proc).
+    _FALLBACK_FULLTEXT_ROLES = frozenset({
+        "Assinatura", "Desembargador Federal / Relator", "À disposição", "Desembargador",
+        "Juiz Federal (1º grau)", "Juiz de Direito (1º grau)", "Juiz Federal", "Juiz de Direito",
+        "Juiz da Vara Federal", "Juiz da Vara", "Juiz do Trabalho", "Ministro", "Relator / Revisor",
+    })
+    if not collected:
+        for pattern, role_label in _JUDGE_PATTERNS:
+            if role_label not in _FALLBACK_FULLTEXT_ROLES:
+                continue
+            for found in re.finditer(pattern, text, flags=re.IGNORECASE | re.MULTILINE):
+                candidate = re.sub(r"\s+", " ", found.group(1)).strip(" .,:;-")
+                for suffix in (" Relator", " Revisor", " Relatora", " Revisora"):
+                    if candidate.endswith(suffix):
+                        candidate = candidate[: -len(suffix)].strip()
+                        break
+                if _looks_like_person_name(candidate):
+                    collected.append((role_label, _normalize_person_name_display(candidate)[:120], True))
+                    break
+
+    # Último recurso: padrão bem permissivo para "Assinado ... por : NOME" (variações de espaço/encoding)
+    if not collected:
+        loose = re.search(
+            r"(?:Assinado|assinado)\s+(?:eletronicamente\s+)?por\s*[:\-]\s*[\r\n]*\s*([A-ZÀ-Ý][A-Za-zÀ-ÿ\'\.\-]*(?:\s+[A-ZÀ-Ýa-zÀ-ÿ\'\.\-]+){1,10})",
+            text,
+            flags=re.IGNORECASE | re.MULTILINE,
+        )
+        if loose:
+            candidate = re.sub(r"\s+", " ", loose.group(1)).strip(" .,:;-")
+            words = candidate.split()
+            if len(words) > 8:
+                candidate = " ".join(words[:8])
+            if _looks_like_person_name(candidate):
+                collected.append(("Assinatura", _normalize_person_name_display(candidate)[:120], True))
+        if not collected:
+            loose2 = re.search(
+                r"Desembargador\s+Federal\s+([A-ZÀ-Ý][A-Za-zÀ-ÿ\'\.\-]+(?:\s+[A-ZÀ-Ýa-zÀ-ÿ\'\.\-]+){1,6})",
+                text,
+                flags=re.IGNORECASE,
+            )
+            if loose2:
+                candidate = re.sub(r"\s+", " ", loose2.group(1)).strip(" .,:;-")
+                for suffix in (" Relator", " Revisor"):
+                    if candidate.endswith(suffix):
+                        candidate = candidate[: -len(suffix)].strip()
+                        break
+                if _looks_like_person_name(candidate):
+                    collected.append(("Desembargador Federal / Relator", _normalize_person_name_display(candidate)[:120], True))
+
+    # Fallback por busca literal (sem regex): quando o PDF tem encoding/forma diferente
+    if not collected:
+        text_lower = text.lower()
+        # "Assinado eletronicamente por: NOME" ou "Assinado por: NOME"
+        for marker in ("assinado eletronicamente por", "assinado por"):
+            idx = text_lower.find(marker)
+            if idx == -1:
+                continue
+            chunk = text[idx + len(marker) : idx + len(marker) + 120]
+            colon = chunk.find(":")
+            if colon != -1:
+                raw_name = chunk[colon + 1 :].split("\n")[0].split("\r")[0].strip()
+                # Remove data no formato dd/mm/aaaa no fim
+                raw_name = re.sub(r"\s*\d{1,2}/\d{1,2}/\d{4}.*$", "", raw_name).strip()
+                candidate = re.sub(r"\s+", " ", raw_name).strip(" .,:;-")[:80]
+                words = candidate.split()
+                if len(words) > 8:
+                    candidate = " ".join(words[:8])
+                if candidate and _looks_like_person_name(candidate):
+                    collected.append(("Assinatura", _normalize_person_name_display(candidate)[:120], True))
+                    break
+        if not collected:
+            idx = text_lower.find("desembargador federal")
+            if idx != -1:
+                skip = len("desembargador federal")
+                after_federal = text[idx + skip : idx + skip + 200].strip()
+                if after_federal:
+                    first_line = after_federal.split("\n")[0].split("\r")[0].strip()
+                    first_line = re.sub(r"\s*Relator\s*$", "", first_line, flags=re.IGNORECASE).strip()
+                    candidate = re.sub(r"\s+", " ", first_line).strip(" .,:;-")[:80]
+                    words = candidate.split()
+                    if len(words) > 8:
+                        candidate = " ".join(words[:8])
+                    if candidate and _looks_like_person_name(candidate):
+                        collected.append(("Desembargador Federal / Relator", _normalize_person_name_display(candidate)[:120], True))
+
+    if not collected:
+        return None, None
+
+    # Exibição: "Juiz: Daniel Lacerda Pereira" (nomes já normalizados acima)
+    display_parts = [f"{r}: {n}" for r, n, _ in collected]
+    display_string = "; ".join(display_parts)
+
+    primary_name = None
+    for role_label, name, from_tail in collected:
+        if from_tail and role_label in _PRIMARY_ROLES_FROM_TAIL:
+            primary_name = name
+            break
+    if primary_name is None:
+        for role_label, name, from_tail in collected:
+            if not from_tail and role_label in _PRIMARY_ROLES_FROM_HEAD:
+                primary_name = name
+                break
+    if primary_name is None:
+        primary_name = collected[0][1]
+
+    return primary_name, display_string
 
 
 def _extract_claim_value_heuristic(text: str) -> Optional[float]:
@@ -304,7 +491,13 @@ def fallback_extract_case_data(
         tribunal_match = _search_first(search_window, [r"\bTJ[A-Z]{2}\b", r"\bTRT-?\d+\b", r"\bTRF-?\d+\b"])
     tribunal_match = _normalize_tribunal_label(tribunal_match)
 
-    judge_match = judge or _extract_judge_name(text)
+    primary_judge, authority_display = _extract_authorities(text)
+    judge_match = judge or primary_judge
+    # Se temos texto de autoridades mas primary ficou None, usa o primeiro nome do display (ex.: "Des.: João Silva" -> João Silva)
+    if authority_display and not judge_match and ": " in authority_display:
+        first_part = authority_display.split(";")[0].strip()
+        if ": " in first_part:
+            judge_match = first_part.split(": ", 1)[1].strip()[:120]
     action_type_final = action_type or _guess_action_type(search_window, process_number_final)
 
     claim_value_final = claim_value
@@ -322,6 +515,7 @@ def fallback_extract_case_data(
         parties={"author": None, "defendant": None},
         key_facts=_extract_key_facts(search_window),
         deadlines=_extract_deadlines_heuristic(search_window),
+        authority_display=authority_display,
     )
 
 
@@ -472,6 +666,14 @@ def analyze_case_with_ai(
         '    "ai_summary": "..."\n'
         "  }\n"
         "}\n\n"
+        "Regra para o campo 'judge': indique APENAS o nome da autoridade RESPONSÁVEL pelo processo. "
+        "Se houver várias autoridades (ex.: juiz de 1º grau e desembargador relator), escolha a que de fato "
+        "decide o processo neste documento: em decisão de tribunal, use o relator/desembargador que assina; "
+        "em sentença de 1º grau, use o juiz que profere a sentença.\n"
+        "Referência (como autoridades costumam aparecer): Justiça Estadual: Juiz(a) de Direito, Juiz(a) da Xª Vara Cível/Criminal/Fazenda/Família, "
+        "Desembargador(a), Relator(a), Revisor(a), Presidente (turma/câmara), Corregedor. Justiça Federal: Juiz(a) Federal (Substituto/Convocado/Titular), "
+        "Desembargador Federal, Ministro (STF/STJ/TST). Assinaturas: 'Assinado por', 'Assinado eletronicamente por', 'À disposição', 'Dado e passado'. "
+        "Abreviações: Min.=Ministro, Des.=Desembargador, Rel.=Relator, Rev.=Revisor.\n\n"
         f"Contexto do upload: arquivo={filename}, process_number={process_number}, tribunal={tribunal}, juiz={judge}, tipo_acao={action_type}, claim_value={claim_value}\n\n"
         "Documento:\n"
         f"{truncated}"
