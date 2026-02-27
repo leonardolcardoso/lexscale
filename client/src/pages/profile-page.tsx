@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, useLocation } from "wouter";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { ArrowLeft, Scale } from "lucide-react";
+import { ArrowLeft, Bot, Database, Scale, Shield } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -151,131 +151,189 @@ export default function ProfilePage() {
   }
 
   const user = profileQuery.data;
+  const inputClass =
+    "h-11 rounded-xl border-slate-700/70 bg-slate-950/55 text-slate-100 placeholder:text-slate-500 focus-visible:border-cyan-400/60 focus-visible:ring-cyan-400/50";
+  const sectionClass = "rounded-2xl border border-slate-700/60 bg-slate-950/35 p-5 sm:p-6";
+  const labelClass = "text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-300";
 
   return (
-    <div className="profile-shell min-h-screen bg-[radial-gradient(circle_at_15%_10%,rgba(59,130,246,0.28),transparent_40%),radial-gradient(circle_at_85%_0%,rgba(20,184,166,0.2),transparent_35%),linear-gradient(180deg,#050b1d_0%,#040916_100%)] p-6 md:p-10">
-      <div className="mx-auto w-full max-w-4xl">
-        <header className="mb-6 flex flex-wrap items-center justify-between gap-3">
-          <Link href="/" className="inline-flex items-center gap-2 text-slate-900 dark:text-white">
-            <Scale className="h-5 w-5 text-cyan-300" />
-            <span className="font-bold">LexScale</span>
-          </Link>
+    <div className="profile-shell relative isolate min-h-screen overflow-hidden bg-[radial-gradient(circle_at_15%_10%,rgba(59,130,246,0.28),transparent_40%),radial-gradient(circle_at_85%_0%,rgba(20,184,166,0.2),transparent_35%),linear-gradient(180deg,#050b1d_0%,#040916_100%)] p-4 sm:p-6 md:p-10">
+      <div className="pointer-events-none absolute inset-0 opacity-30 [background-image:linear-gradient(rgba(148,163,184,0.08)_1px,transparent_1px),linear-gradient(90deg,rgba(148,163,184,0.08)_1px,transparent_1px)] [background-size:36px_36px] [mask-image:radial-gradient(circle_at_top,black_15%,transparent_72%)]" />
+      <div className="pointer-events-none absolute -top-24 left-1/2 h-72 w-72 -translate-x-1/2 rounded-full bg-cyan-500/15 blur-[110px]" />
+
+      <div className="relative mx-auto w-full max-w-5xl space-y-5">
+        <header className="flex flex-wrap items-center justify-between gap-3">
+          <div className="space-y-1">
+            <Link href="/" className="inline-flex items-center gap-2 text-slate-900 dark:text-white">
+              <Scale className="h-5 w-5 text-cyan-300" />
+              <span className="font-bold">LexScale</span>
+            </Link>
+            <p className="text-[11px] font-medium uppercase tracking-[0.25em] text-cyan-300/75">PROFILE WORKSPACE</p>
+          </div>
           <div className="flex flex-wrap gap-2">
-            <Button variant="outline" className="border-slate-700 bg-slate-900/50 text-slate-100 hover:bg-slate-800" onClick={goBack}>
+            <Button variant="outline" className="h-10 rounded-xl border-slate-700 bg-slate-900/45 text-slate-100 hover:bg-slate-800/85" onClick={goBack}>
               <ArrowLeft className="mr-1 h-4 w-4" />
               Voltar
             </Button>
-            <Button variant="outline" className="border-slate-700 bg-slate-900/50 text-slate-100 hover:bg-slate-800" onClick={() => logoutMutation.mutate()} disabled={logoutMutation.isPending}>
+            <Button
+              variant="outline"
+              className="h-10 rounded-xl border-slate-700 bg-slate-900/45 text-slate-100 hover:bg-slate-800/85"
+              onClick={() => logoutMutation.mutate()}
+              disabled={logoutMutation.isPending}
+            >
               {logoutMutation.isPending ? "Saindo..." : "Sair"}
             </Button>
           </div>
         </header>
 
-        <Card className="border border-slate-700/80 bg-slate-900/85 text-slate-100 shadow-[0_24px_60px_rgba(2,6,23,0.55)] backdrop-blur-xl">
-          <CardHeader>
-            <CardTitle>Meu Perfil</CardTitle>
-            <CardDescription className="text-slate-300">Gerencie os dados da sua conta e da sua equipe.</CardDescription>
+        <Card className="relative overflow-hidden border border-slate-700/70 bg-slate-900/78 text-slate-100 shadow-[0_32px_70px_rgba(2,6,23,0.58)] backdrop-blur-2xl">
+          <div className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-cyan-300/55 to-transparent" />
+          <CardHeader className="space-y-4 border-b border-slate-700/45 pb-5">
+            <div className="inline-flex w-fit items-center gap-2 rounded-full border border-cyan-400/35 bg-cyan-400/10 px-3 py-1 text-xs font-medium text-cyan-200">
+              <Bot className="h-3.5 w-3.5" />
+              Painel Inteligente de Perfil
+            </div>
+
+            <div className="space-y-1.5">
+              <CardTitle className="text-2xl font-semibold tracking-tight md:text-[30px]">Meu Perfil</CardTitle>
+              <CardDescription className="max-w-2xl text-sm leading-relaxed text-slate-300">
+                Atualize seus dados com uma interface limpa e orientada para produtividade jurídica com IA.
+              </CardDescription>
+            </div>
+
+            <div className="grid gap-2 sm:grid-cols-3">
+              <div className="flex items-center gap-2 rounded-xl border border-slate-700/60 bg-slate-950/45 px-3 py-2 text-xs text-slate-200">
+                <Shield className="h-3.5 w-3.5 text-emerald-300" />
+                Sessão protegida
+              </div>
+              <div className="flex items-center gap-2 rounded-xl border border-slate-700/60 bg-slate-950/45 px-3 py-2 text-xs text-slate-200">
+                <Bot className="h-3.5 w-3.5 text-cyan-300" />
+                Assistência ativa
+              </div>
+              <div className="truncate rounded-xl border border-slate-700/60 bg-slate-950/45 px-3 py-2 text-xs text-slate-300">
+                Conta: {user?.email || "não informado"}
+              </div>
+            </div>
           </CardHeader>
-          <CardContent className="space-y-5">
-            <div className="grid gap-4 md:grid-cols-2">
-              <div className="space-y-2">
-                <Label htmlFor="first_name">Nome</Label>
-                <Input id="first_name" value={form.first_name} onChange={(event) => setForm((prev) => ({ ...prev, first_name: event.target.value }))} className="border-slate-700 bg-slate-950/60" />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="last_name">Sobrenome</Label>
-                <Input id="last_name" value={form.last_name} onChange={(event) => setForm((prev) => ({ ...prev, last_name: event.target.value }))} className="border-slate-700 bg-slate-950/60" />
-              </div>
-            </div>
 
-            <div className="grid gap-4 md:grid-cols-2">
-              <div className="space-y-2">
-                <Label htmlFor="email">E-mail</Label>
-                <Input id="email" value={user?.email || ""} disabled className="border-slate-700 bg-slate-950/50 text-slate-400" />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="phone">Telefone</Label>
-                <Input id="phone" value={form.phone} onChange={(event) => setForm((prev) => ({ ...prev, phone: event.target.value }))} className="border-slate-700 bg-slate-950/60" />
-              </div>
-            </div>
-
-            <div className="grid gap-4 md:grid-cols-2">
-              <div className="space-y-2">
-                <Label htmlFor="company">Empresa</Label>
-                <Input id="company" value={form.company} onChange={(event) => setForm((prev) => ({ ...prev, company: event.target.value }))} className="border-slate-700 bg-slate-950/60" />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="role">Cargo</Label>
-                <Input id="role" value={form.role} onChange={(event) => setForm((prev) => ({ ...prev, role: event.target.value }))} className="border-slate-700 bg-slate-950/60" />
-              </div>
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="bio">Bio</Label>
-              <Textarea
-                id="bio"
-                value={form.bio}
-                onChange={(event) => setForm((prev) => ({ ...prev, bio: event.target.value }))}
-                className="min-h-[120px] border-slate-700 bg-slate-950/60"
-                placeholder="Descreva sua área de atuação, especialidades e objetivos."
-              />
-            </div>
-
-            <div className="flex justify-end">
-              <Button className="bg-blue-600 hover:bg-blue-500 text-white" onClick={() => updateMutation.mutate()} disabled={updateMutation.isPending}>
-                {updateMutation.isPending ? "Salvando..." : "Salvar Alterações"}
-              </Button>
-            </div>
-
-            <div className="rounded-xl border border-slate-700/70 bg-slate-950/45 p-4 space-y-4">
-              <div>
-                <p className="text-sm font-semibold text-slate-100">Cadastro de API pública (opcional)</p>
-                <p className="text-xs text-slate-300">Use somente se quiser adicionar uma fonte própria para sincronização.</p>
+          <CardContent className="space-y-6 pt-6">
+            <section className={sectionClass}>
+              <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+                <h3 className="text-sm font-semibold tracking-wide text-slate-100">Identidade</h3>
+                <span className="rounded-full border border-slate-700 bg-slate-900/65 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-300">Essencial</span>
               </div>
 
               <div className="grid gap-4 md:grid-cols-2">
                 <div className="space-y-2">
-                  <Label htmlFor="source_name">Nome da fonte</Label>
+                  <Label htmlFor="first_name" className={labelClass}>Nome</Label>
+                  <Input id="first_name" value={form.first_name} onChange={(event) => setForm((prev) => ({ ...prev, first_name: event.target.value }))} className={inputClass} />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="last_name" className={labelClass}>Sobrenome</Label>
+                  <Input id="last_name" value={form.last_name} onChange={(event) => setForm((prev) => ({ ...prev, last_name: event.target.value }))} className={inputClass} />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="email" className={labelClass}>E-mail</Label>
+                  <Input id="email" value={user?.email || ""} disabled className={`${inputClass} text-slate-400 disabled:opacity-100`} />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="phone" className={labelClass}>Telefone</Label>
+                  <Input id="phone" value={form.phone} onChange={(event) => setForm((prev) => ({ ...prev, phone: event.target.value }))} className={inputClass} />
+                </div>
+              </div>
+            </section>
+
+            <section className={sectionClass}>
+              <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+                <h3 className="text-sm font-semibold tracking-wide text-slate-100">Perfil Profissional</h3>
+                <span className="rounded-full border border-cyan-400/35 bg-cyan-400/10 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-cyan-200">Equipe</span>
+              </div>
+
+              <div className="grid gap-4 md:grid-cols-2">
+                <div className="space-y-2">
+                  <Label htmlFor="company" className={labelClass}>Empresa</Label>
+                  <Input id="company" value={form.company} onChange={(event) => setForm((prev) => ({ ...prev, company: event.target.value }))} className={inputClass} />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="role" className={labelClass}>Cargo</Label>
+                  <Input id="role" value={form.role} onChange={(event) => setForm((prev) => ({ ...prev, role: event.target.value }))} className={inputClass} />
+                </div>
+              </div>
+            </section>
+
+            <section className={sectionClass}>
+              <h3 className="mb-2 text-sm font-semibold tracking-wide text-slate-100">Bio Estratégica</h3>
+              <p className="mb-3 text-xs leading-relaxed text-slate-400">Descreva especialidades e objetivos para personalizar melhor análises e recomendações.</p>
+              <Textarea
+                id="bio"
+                value={form.bio}
+                onChange={(event) => setForm((prev) => ({ ...prev, bio: event.target.value }))}
+                className="min-h-[140px] rounded-xl border-slate-700/70 bg-slate-950/55 text-slate-100 placeholder:text-slate-500 focus-visible:border-cyan-400/60 focus-visible:ring-cyan-400/50"
+                placeholder="Descreva sua área de atuação, especialidades e objetivos."
+              />
+            </section>
+
+            <div className="flex flex-wrap items-center justify-end gap-3">
+              <p className="text-xs text-slate-400">Dados salvos com segurança no seu workspace.</p>
+              <Button className="h-11 rounded-xl border border-blue-400/45 bg-blue-600 text-white shadow-[0_10px_28px_rgba(37,99,235,0.38)] hover:bg-blue-500" onClick={() => updateMutation.mutate()} disabled={updateMutation.isPending}>
+                {updateMutation.isPending ? "Salvando..." : "Salvar Alterações"}
+              </Button>
+            </div>
+
+            <section className={sectionClass}>
+              <div className="mb-4 flex items-start gap-3">
+                <div className="mt-0.5 rounded-xl border border-cyan-400/35 bg-cyan-500/10 p-2">
+                  <Database className="h-4 w-4 text-cyan-200" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-semibold tracking-wide text-slate-100">Integração com API pública</h3>
+                  <p className="text-xs leading-relaxed text-slate-400">Opcional. Conecte uma fonte própria para sincronização de dados externos.</p>
+                </div>
+              </div>
+
+              <div className="grid gap-4 md:grid-cols-2">
+                <div className="space-y-2">
+                  <Label htmlFor="source_name" className={labelClass}>Nome da fonte</Label>
                   <Input
                     id="source_name"
                     value={sourceForm.name}
                     onChange={(event) => setSourceForm((prev) => ({ ...prev, name: event.target.value }))}
-                    className="border-slate-700 bg-slate-950/60"
+                    className={inputClass}
                   />
                 </div>
                 <div className="space-y-2">
-                  <Label htmlFor="source_tribunal">Tribunal (opcional)</Label>
+                  <Label htmlFor="source_tribunal" className={labelClass}>Tribunal (opcional)</Label>
                   <Input
                     id="source_tribunal"
                     value={sourceForm.tribunal}
                     onChange={(event) => setSourceForm((prev) => ({ ...prev, tribunal: event.target.value }))}
-                    className="border-slate-700 bg-slate-950/60"
+                    className={inputClass}
                   />
                 </div>
               </div>
 
-              <div className="space-y-2">
-                <Label htmlFor="source_base_url">URL da API pública</Label>
+              <div className="mt-4 space-y-2">
+                <Label htmlFor="source_base_url" className={labelClass}>URL da API pública</Label>
                 <Input
                   id="source_base_url"
                   value={sourceForm.base_url}
                   onChange={(event) => setSourceForm((prev) => ({ ...prev, base_url: event.target.value }))}
-                  className="border-slate-700 bg-slate-950/60"
+                  className={inputClass}
                   placeholder="https://..."
                 />
               </div>
 
-              <div className="flex justify-end">
+              <div className="mt-4 flex justify-end">
                 <Button
                   variant="outline"
-                  className="border-slate-700 bg-slate-900/50 text-slate-100 hover:bg-slate-800"
+                  className="h-10 rounded-xl border-slate-700 bg-slate-900/50 text-slate-100 hover:bg-slate-800"
                   onClick={() => sourceMutation.mutate()}
                   disabled={sourceMutation.isPending}
                 >
                   {sourceMutation.isPending ? "Salvando..." : "Salvar Fonte"}
                 </Button>
               </div>
-            </div>
+            </section>
           </CardContent>
         </Card>
       </div>
