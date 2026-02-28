@@ -380,7 +380,7 @@ export function buildMockDashboardData(filters: DashboardFilters): DashboardData
     inteligencia: {
       acoes_rescisorias: {
         summary:
-          `Triagem rescisória (demo) com ${Math.max(3, opportunitiesCount + 2)} casos avaliados no recorte atual.`,
+          `Triagem rescisória com ${Math.max(3, opportunitiesCount + 2)} casos priorizados no recorte atual.`,
         kpis: [
           { label: "Casos avaliados", value: `${Math.max(3, opportunitiesCount + 2)}`, tone: "blue" },
           { label: "Elegíveis", value: `${Math.max(1, opportunitiesCount)}`, tone: "emerald" },
@@ -471,7 +471,7 @@ export function buildMockDashboardData(filters: DashboardFilters): DashboardData
     },
     simulacoes: {
       description:
-        `Cenários simulados em modo demo para o recorte atual (${selectedAction} em ${selectedTribunal}). No filtro aplicado, a estratégia ${bestScenarioCopy} foi a de maior sucesso projetado.`,
+        `Cenários simulados para o recorte atual (${selectedAction} em ${selectedTribunal}). No filtro aplicado, a estratégia ${bestScenarioCopy} apresentou o maior potencial de êxito.`,
       scenarios: [
         {
           title: "Cenário A: Acordo Imediato",
@@ -486,10 +486,10 @@ export function buildMockDashboardData(filters: DashboardFilters): DashboardData
           footer:
             `Baseado em ${scenarioASample} casos simulados para ${selectedAction}. Acordo antes da audiência tende a reduzir prazo para ${formatMonths(conservativeTime)} no recorte atual.`,
           detail_title: "Detalhes",
-          detail_summary: "Cenário A: Acordo Imediato (dados fictícios em modo demo).",
+          detail_summary: "Cenário A: Acordo Imediato.",
           next_step_title: "Próximo passo recomendado:",
           next_step_text:
-            "Em POC, o clique abre detalhes. Na versão real, este modal vira um fluxo com: baseline vs cenário, probabilidade, custo, prazos e ação (ex.: gerar proposta, checklist, minuta).",
+            "Estruture proposta objetiva com faixa de concessão, prazo de resposta e argumentos de custo/tempo para acelerar composição.",
         },
         {
           title: "Cenário B: Julgamento Final",
@@ -504,7 +504,7 @@ export function buildMockDashboardData(filters: DashboardFilters): DashboardData
           footer:
             `Baseado em ${scenarioBSample} casos simulados para ${selectedTribunal}. Manter até sentença melhora valor potencial, com tempo médio de ${formatMonths(balancedTime)}.`,
           detail_title: "Detalhes",
-          detail_summary: "Cenário B: Julgamento Final (dados fictícios em modo demo).",
+          detail_summary: "Cenário B: Julgamento Final.",
           next_step_title: "Próximo passo recomendado:",
           next_step_text: "Consolidar provas documentais e preparar linha de sustentação para reduzir risco recursal.",
         },
@@ -521,7 +521,7 @@ export function buildMockDashboardData(filters: DashboardFilters): DashboardData
           footer:
             `Baseado em ${scenarioCSample} casos simulados. Estratégia alternativa reduz risco para ${formatPercent(aggressiveRisk)} com prazo estimado de ${formatMonths(aggressiveTime)}.`,
           detail_title: "Detalhes",
-          detail_summary: "Cenário C: Estratégia Alternativa (dados fictícios em modo demo).",
+          detail_summary: "Cenário C: Estratégia Alternativa.",
           next_step_title: "Próximo passo recomendado:",
           next_step_text: "Validar perfil de mediação e estruturar proposta escalonada para acelerar composição.",
         },

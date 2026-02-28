@@ -1309,7 +1309,7 @@ def list_upload_history(
             ),
         )
         .filter(ProcessCase.user_id == current_user.id)
-        .order_by(ProcessCase.created_at.desc())
+        .order_by(func.coalesce(latest_document_subquery.c.latest_document_created_at, ProcessCase.created_at).desc())
         .limit(limit)
         .all()
     )
@@ -1351,7 +1351,7 @@ def list_upload_history(
                 ai_next_retry_at=case_item.ai_next_retry_at,
                 ai_processed_at=case_item.ai_processed_at,
                 ai_last_error=case_item.ai_last_error,
-                created_at=case_item.created_at,
+                created_at=document_item.created_at if document_item and document_item.created_at else case_item.created_at,
                 generated_data=UploadHistoryGeneratedData(
                     extracted=extracted_payload,
                     success_probability=case_item.success_probability,

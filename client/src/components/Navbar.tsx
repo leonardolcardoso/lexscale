@@ -54,51 +54,17 @@ export function Navbar() {
   };
 
   return (
-    <header className="sticky top-0 z-50 w-full bg-slate-950/95 px-3 pt-3 backdrop-blur-md md:px-6 md:pt-4">
-      <div className="mx-auto max-w-7xl rounded-2xl border border-slate-800/85 bg-slate-950/80 backdrop-blur-xl shadow-[0_12px_35px_rgba(2,6,23,0.45)]">
-        <div className="flex h-16 items-center justify-between px-4 md:h-20 md:px-6">
+    <header className="sticky top-0 z-50 border-b border-slate-800/80 bg-slate-950/85 px-4 py-3 backdrop-blur-xl lg:px-5 lg:py-2 xl:h-16 xl:px-6 xl:py-0">
+      <div className="mx-auto flex w-full max-w-[1400px] flex-col gap-3 md:grid md:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] md:items-center md:gap-3 md:py-1 xl:h-full xl:py-0">
+        <div className="flex h-10 items-center justify-between md:h-auto">
           <Link
             href="/"
             onClick={handleLogoClick}
-            className="brand-logo-chip flex items-center gap-2.5 rounded-xl px-2.5 py-1.5 shadow-sm transition-colors"
+            className="brand-logo-chip flex items-center gap-2 rounded-xl px-2.5 py-1.5 shadow-sm transition-colors md:justify-self-start"
           >
-            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-blue-700 via-blue-600 to-cyan-500 text-white shadow-lg shadow-blue-600/25">
-              <Scale className="h-5 w-5" />
-            </div>
-            <div>
-              <p className="brand-logo-title text-xl font-extrabold tracking-tight">LexScale</p>
-              <p className="brand-logo-subtitle -mt-0.5 text-[11px] font-medium uppercase tracking-[0.18em]">IA Jurídica</p>
-            </div>
+            <Scale className="brand-logo-icon h-6 w-6" />
+            <span className="brand-logo-title text-xl font-bold tracking-tight">LexScale</span>
           </Link>
-
-          <nav className="hidden items-center gap-1 rounded-full border border-slate-800 bg-slate-900/80 p-1 md:flex">
-            {NAV_ITEMS.map((item) => (
-              <a
-                key={item.label}
-                href={item.href.replace("/#", "#")}
-                onClick={(event) => handleNavClick(event, item.href)}
-                className="rounded-full px-3 py-2 text-sm font-semibold text-slate-300 transition-colors hover:bg-slate-800 hover:text-cyan-200"
-              >
-                {item.label}
-              </a>
-            ))}
-          </nav>
-
-          <div className="hidden items-center gap-3 md:flex">
-            <Link href="/auth?tab=login">
-              <Button
-                variant="ghost"
-                className="rounded-full px-5 font-semibold text-slate-700 hover:bg-slate-200 hover:text-slate-900 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-white"
-              >
-                Login
-              </Button>
-            </Link>
-            <Link href="/auth?tab=register">
-              <Button className="h-11 rounded-full bg-gradient-to-r from-emerald-500 to-emerald-600 px-6 font-bold text-white shadow-lg shadow-emerald-500/25 hover:from-emerald-600 hover:to-emerald-700">
-                Criar Conta Grátis
-              </Button>
-            </Link>
-          </div>
 
           <Button
             variant="ghost"
@@ -109,6 +75,35 @@ export function Navbar() {
           >
             {menuOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
           </Button>
+        </div>
+
+        <nav className="hidden items-center gap-1 rounded-full border border-slate-800 bg-slate-900/80 p-1 md:flex md:justify-self-center">
+          {NAV_ITEMS.map((item) => (
+            <a
+              key={item.label}
+              href={item.href.replace("/#", "#")}
+              onClick={(event) => handleNavClick(event, item.href)}
+              className="rounded-full px-3 py-2 text-sm font-semibold text-slate-300 transition-colors hover:bg-slate-800 hover:text-cyan-200"
+            >
+              {item.label}
+            </a>
+          ))}
+        </nav>
+
+        <div className="hidden items-center gap-3 md:flex md:justify-self-end">
+          <Link href="/auth?tab=login">
+            <Button
+              variant="ghost"
+              className="rounded-full px-5 font-semibold text-slate-700 hover:bg-slate-200 hover:text-slate-900 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-white"
+            >
+              Login
+            </Button>
+          </Link>
+          <Link href="/auth?tab=register">
+            <Button className="h-11 rounded-full bg-gradient-to-r from-emerald-500 to-emerald-600 px-6 font-bold text-white shadow-lg shadow-emerald-500/25 hover:from-emerald-600 hover:to-emerald-700">
+              Criar Conta Grátis
+            </Button>
+          </Link>
         </div>
 
         {menuOpen && (

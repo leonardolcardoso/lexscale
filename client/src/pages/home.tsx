@@ -572,11 +572,10 @@ type PricingCardProps = {
 function PricingCard({ title, desc, price, features, highlighted, cta, onCtaClick }: PricingCardProps) {
   return (
     <article
-      className={`relative rounded-3xl p-7 text-left transition-transform duration-300 hover:-translate-y-1 ${
-        highlighted
+      className={`relative rounded-3xl p-7 text-left transition-transform duration-300 hover:-translate-y-1 ${highlighted
           ? "bg-gradient-to-br from-blue-700 to-blue-600 text-white shadow-2xl shadow-blue-900/25"
           : "soft-panel text-slate-100"
-      }`}
+        }`}
     >
       {highlighted ? (
         <div className="absolute -top-3 left-1/2 -translate-x-1/2 rounded-full bg-yellow-400 px-3 py-1 text-xs font-black uppercase tracking-wider text-yellow-900">
@@ -603,9 +602,8 @@ function PricingCard({ title, desc, price, features, highlighted, cta, onCtaClic
 
       <Button
         onClick={onCtaClick}
-        className={`h-12 w-full rounded-full text-sm font-extrabold ${
-          highlighted ? "bg-slate-100 text-blue-700 hover:bg-white" : "bg-cyan-500 text-slate-950 hover:bg-cyan-400"
-        }`}
+        className={`h-12 w-full rounded-full text-sm font-extrabold ${highlighted ? "bg-slate-100 text-blue-700 hover:bg-white" : "bg-cyan-500 text-slate-950 hover:bg-cyan-400"
+          }`}
       >
         {cta}
       </Button>

@@ -154,7 +154,8 @@ export default function ProfilePage() {
   const inputClass =
     "h-11 rounded-xl border-slate-700/70 bg-slate-950/55 text-slate-100 placeholder:text-slate-500 focus-visible:border-cyan-400/60 focus-visible:ring-cyan-400/50";
   const sectionClass = "rounded-2xl border border-slate-700/60 bg-slate-950/35 p-5 sm:p-6";
-  const labelClass = "text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-300";
+  const labelClass = "block min-h-[1.25rem] text-xs font-semibold uppercase tracking-wide text-slate-300";
+  const fieldGroupClass = "flex min-w-0 flex-col gap-2.5";
 
   return (
     <div className="profile-shell relative isolate min-h-screen overflow-hidden bg-[radial-gradient(circle_at_15%_10%,rgba(59,130,246,0.28),transparent_40%),radial-gradient(circle_at_85%_0%,rgba(20,184,166,0.2),transparent_35%),linear-gradient(180deg,#050b1d_0%,#040916_100%)] p-4 sm:p-6 md:p-10">
@@ -224,19 +225,19 @@ export default function ProfilePage() {
               </div>
 
               <div className="grid gap-4 md:grid-cols-2">
-                <div className="space-y-2">
+                <div className={fieldGroupClass}>
                   <Label htmlFor="first_name" className={labelClass}>Nome</Label>
                   <Input id="first_name" value={form.first_name} onChange={(event) => setForm((prev) => ({ ...prev, first_name: event.target.value }))} className={inputClass} />
                 </div>
-                <div className="space-y-2">
+                <div className={fieldGroupClass}>
                   <Label htmlFor="last_name" className={labelClass}>Sobrenome</Label>
                   <Input id="last_name" value={form.last_name} onChange={(event) => setForm((prev) => ({ ...prev, last_name: event.target.value }))} className={inputClass} />
                 </div>
-                <div className="space-y-2">
+                <div className={fieldGroupClass}>
                   <Label htmlFor="email" className={labelClass}>E-mail</Label>
                   <Input id="email" value={user?.email || ""} disabled className={`${inputClass} text-slate-400 disabled:opacity-100`} />
                 </div>
-                <div className="space-y-2">
+                <div className={fieldGroupClass}>
                   <Label htmlFor="phone" className={labelClass}>Telefone</Label>
                   <Input id="phone" value={form.phone} onChange={(event) => setForm((prev) => ({ ...prev, phone: event.target.value }))} className={inputClass} />
                 </div>
@@ -250,11 +251,11 @@ export default function ProfilePage() {
               </div>
 
               <div className="grid gap-4 md:grid-cols-2">
-                <div className="space-y-2">
+                <div className={fieldGroupClass}>
                   <Label htmlFor="company" className={labelClass}>Empresa</Label>
                   <Input id="company" value={form.company} onChange={(event) => setForm((prev) => ({ ...prev, company: event.target.value }))} className={inputClass} />
                 </div>
-                <div className="space-y-2">
+                <div className={fieldGroupClass}>
                   <Label htmlFor="role" className={labelClass}>Cargo</Label>
                   <Input id="role" value={form.role} onChange={(event) => setForm((prev) => ({ ...prev, role: event.target.value }))} className={inputClass} />
                 </div>
@@ -292,7 +293,7 @@ export default function ProfilePage() {
               </div>
 
               <div className="grid gap-4 md:grid-cols-2">
-                <div className="space-y-2">
+                <div className={fieldGroupClass}>
                   <Label htmlFor="source_name" className={labelClass}>Nome da fonte</Label>
                   <Input
                     id="source_name"
@@ -301,7 +302,7 @@ export default function ProfilePage() {
                     className={inputClass}
                   />
                 </div>
-                <div className="space-y-2">
+                <div className={fieldGroupClass}>
                   <Label htmlFor="source_tribunal" className={labelClass}>Tribunal (opcional)</Label>
                   <Input
                     id="source_tribunal"
