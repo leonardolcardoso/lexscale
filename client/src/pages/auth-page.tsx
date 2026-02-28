@@ -356,14 +356,9 @@ type BrandBadgeProps = {
 
 function BrandBadge({ href, className, compact = false }: BrandBadgeProps) {
   return (
-    <Link href={href} className={cn("auth-brand inline-flex items-center gap-2.5 rounded-xl border px-2.5 py-1.5 transition-colors", className)}>
-      <div className={cn("auth-brand-icon flex items-center justify-center rounded-xl bg-gradient-to-br from-blue-700 via-blue-600 to-cyan-500 text-white shadow-lg shadow-blue-600/25", compact ? "h-9 w-9" : "h-10 w-10")}>
-        <Scale className={cn(compact ? "h-4 w-4" : "h-5 w-5")} />
-      </div>
-      <div>
-        <p className={cn("auth-brand-name font-extrabold tracking-tight", compact ? "text-lg" : "text-xl")}>LexScale</p>
-        {!compact ? <p className="auth-brand-subtitle -mt-0.5 text-[11px] font-medium uppercase tracking-[0.18em]">IA Jurídica</p> : null}
-      </div>
+    <Link href={href} className={cn("brand-logo-chip inline-flex items-center gap-2 rounded-xl px-2.5 py-1.5 shadow-sm transition-colors", className)}>
+      <Scale className={cn("brand-logo-icon", compact ? "h-5 w-5" : "h-6 w-6")} />
+      <span className={cn("brand-logo-title font-bold tracking-tight", compact ? "text-lg" : "text-xl")}>LexScale</span>
     </Link>
   );
 }

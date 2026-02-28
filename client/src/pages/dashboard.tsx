@@ -1697,13 +1697,13 @@ export default function Dashboard() {
   }, []);
 
   const userInitials = useMemo(() => {
+    if (meQuery.data?.full_name) {
+      return buildInitials(meQuery.data.full_name);
+    }
     if (isDemoMode) {
       return "DM";
     }
-    if (!meQuery.data?.full_name) {
-      return "US";
-    }
-    return buildInitials(meQuery.data.full_name);
+    return "US";
   }, [isDemoMode, meQuery.data?.full_name]);
 
   const radarData = useMemo(
@@ -1966,20 +1966,11 @@ export default function Dashboard() {
 
           <div className="flex flex-wrap items-center justify-center gap-2 sm:gap-3 lg:justify-self-end lg:justify-end">
             {isDemoMode ? (
-              <>
-                <span className="rounded-full border border-cyan-400/40 bg-cyan-500/15 px-3 py-1 text-[10px] font-bold uppercase tracking-[0.16em] text-cyan-200">
-                  Modo Demo
-                </span>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="border-slate-300 bg-slate-100 text-slate-700 hover:bg-slate-200 dark:border-slate-700 dark:bg-slate-900/60 dark:text-slate-200 dark:hover:bg-slate-800"
-                  onClick={() => setLocation("/auth?tab=login")}
-                >
-                  Fazer Login
-                </Button>
-              </>
-            ) : (
+              <span className="rounded-full border border-cyan-400/40 bg-cyan-500/15 px-3 py-1 text-[10px] font-bold uppercase tracking-[0.16em] text-cyan-200">
+                Modo Demo
+              </span>
+            ) : null}
+            {meQuery.data ? (
               <>
                 <Button
                   variant="outline"
@@ -2002,6 +1993,15 @@ export default function Dashboard() {
                   <div className="w-8 h-8 bg-blue-600 text-white rounded-full flex items-center justify-center font-bold text-sm">{userInitials}</div>
                 </Button>
               </>
+            ) : (
+              <Button
+                variant="outline"
+                size="sm"
+                className="border-slate-300 bg-slate-100 text-slate-700 hover:bg-slate-200 dark:border-slate-700 dark:bg-slate-900/60 dark:text-slate-200 dark:hover:bg-slate-800"
+                onClick={() => setLocation("/auth?tab=login")}
+              >
+                Fazer Login
+              </Button>
             )}
           </div>
         </div>
