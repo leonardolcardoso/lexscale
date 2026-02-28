@@ -161,7 +161,6 @@ export default function Home() {
     staleTime: 60_000,
   });
   const isAuthenticated = Boolean(meQuery.data);
-  const firstName = meQuery.data?.first_name?.trim() || meQuery.data?.full_name?.split(" ")[0] || "você";
 
   const scrollToSection = (id: string) => {
     const section = document.getElementById(id);
@@ -244,30 +243,6 @@ export default function Home() {
               </Button>
             </div>
 
-            {isAuthenticated ? (
-              <motion.div
-                initial={{ opacity: 0, y: 8 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.35, ease: "easeOut", delay: 0.1 }}
-                className="mt-5 flex w-full max-w-2xl flex-wrap items-center gap-2 rounded-2xl border border-cyan-400/25 bg-slate-950/45 p-3 backdrop-blur-sm"
-              >
-                <div className="mr-2 flex items-center gap-2 rounded-full border border-cyan-400/30 bg-cyan-500/10 px-3 py-1.5 text-xs font-semibold text-cyan-100">
-                  <span className="inline-block h-2 w-2 rounded-full bg-emerald-300" />
-                  Sessão ativa
-                </div>
-                <p className="mr-auto text-sm text-blue-100/90">Bem-vindo de volta, <strong>{firstName}</strong>.</p>
-                <Link href="/profile">
-                  <Button variant="outline" className="h-9 rounded-full border-slate-600 bg-slate-900/70 px-4 text-xs font-semibold text-slate-100 hover:bg-slate-800">
-                    Meu Perfil
-                  </Button>
-                </Link>
-                <Link href="/dashboard">
-                  <Button className="h-9 rounded-full bg-cyan-500 px-4 text-xs font-bold text-slate-950 hover:bg-cyan-400">
-                    Continuar no Dashboard
-                  </Button>
-                </Link>
-              </motion.div>
-            ) : null}
           </motion.div>
 
           <motion.div
@@ -282,7 +257,7 @@ export default function Home() {
               <div className="relative space-y-6">
                 <div className="flex items-center justify-between">
                   <p className="text-xs font-bold uppercase tracking-[0.22em] text-blue-200">Painel de Eficiência</p>
-                  <span className="rounded-full bg-emerald-400/20 px-3 py-1 text-xs font-bold text-emerald-200">+23%</span>
+                  <span className="rounded-full bg-emerald-200/80 px-3 py-1 text-xs font-bold text-emerald-800 dark:bg-emerald-400/20 dark:text-emerald-200">+23%</span>
                 </div>
 
                 <div className="grid grid-cols-2 gap-4">

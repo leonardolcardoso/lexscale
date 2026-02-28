@@ -103,7 +103,7 @@ export function Navbar() {
           <Button
             variant="ghost"
             size="icon"
-            className="text-slate-200 hover:bg-slate-800 md:hidden"
+            className="text-slate-700 hover:bg-slate-200 dark:text-slate-200 dark:hover:bg-slate-800 md:hidden"
             onClick={() => setMenuOpen((open) => !open)}
             aria-label="Abrir menu"
           >
@@ -117,7 +117,7 @@ export function Navbar() {
               key={item.label}
               href={item.href.replace("/#", "#")}
               onClick={(event) => handleNavClick(event, item.href)}
-              className="rounded-full px-3 py-2 text-sm font-semibold text-slate-300 transition-colors hover:bg-slate-800 hover:text-cyan-200"
+              className="rounded-full px-3 py-2 text-sm font-semibold text-slate-700 transition-colors hover:bg-slate-200 hover:text-cyan-700 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-cyan-200"
             >
               {item.label}
             </a>
@@ -136,32 +136,35 @@ export function Navbar() {
                 <DropdownMenuTrigger asChild>
                   <Button
                     variant="outline"
-                    className="h-11 rounded-full border-slate-700/80 bg-slate-900/85 px-3 text-slate-100 hover:bg-slate-800"
+                    className="h-11 rounded-full border-slate-300 bg-white/90 px-3 text-slate-800 hover:bg-slate-100 dark:border-slate-700/80 dark:bg-slate-900/85 dark:text-slate-100 dark:hover:bg-slate-800"
                   >
-                    <span className="mr-2 inline-flex h-7 w-7 items-center justify-center rounded-full bg-cyan-500/20 text-[11px] font-bold text-cyan-200">
+                    <span className="mr-2 inline-flex h-7 w-7 items-center justify-center rounded-full bg-cyan-100 text-[11px] font-bold text-cyan-700 dark:bg-cyan-500/20 dark:text-cyan-200">
                       {initials}
                     </span>
                     <span className="max-w-[120px] truncate text-sm font-semibold">{displayName}</span>
-                    <ChevronDown className="ml-2 h-4 w-4 text-slate-400" />
+                    <ChevronDown className="ml-2 h-4 w-4 text-slate-500 dark:text-slate-400" />
                   </Button>
                 </DropdownMenuTrigger>
-                <DropdownMenuContent align="end" className="w-64 border-slate-700 bg-slate-900/98 text-slate-100">
+                <DropdownMenuContent
+                  align="end"
+                  className="w-64 border-slate-200 bg-white/95 text-slate-800 shadow-[0_16px_34px_rgba(15,23,42,0.16)] dark:border-slate-700 dark:bg-slate-900/98 dark:text-slate-100 dark:shadow-[0_16px_34px_rgba(2,6,23,0.45)]"
+                >
                   <DropdownMenuLabel className="space-y-0.5">
                     <p className="text-sm font-semibold">{displayName}</p>
-                    <p className="truncate text-xs font-normal text-slate-400">{userEmail}</p>
+                    <p className="truncate text-xs font-normal text-slate-500 dark:text-slate-400">{userEmail}</p>
                   </DropdownMenuLabel>
-                  <DropdownMenuSeparator className="bg-slate-700" />
-                  <DropdownMenuItem className="cursor-pointer focus:bg-slate-800" onClick={() => setLocation("/dashboard")}>
-                    <LayoutDashboard className="h-4 w-4 text-cyan-300" />
+                  <DropdownMenuSeparator className="bg-slate-200 dark:bg-slate-700" />
+                  <DropdownMenuItem className="cursor-pointer focus:bg-slate-100 dark:focus:bg-slate-800" onClick={() => setLocation("/dashboard")}>
+                    <LayoutDashboard className="h-4 w-4 text-cyan-700 dark:text-cyan-300" />
                     Dashboard
                   </DropdownMenuItem>
-                  <DropdownMenuItem className="cursor-pointer focus:bg-slate-800" onClick={() => setLocation("/profile")}>
-                    <UserCircle2 className="h-4 w-4 text-cyan-300" />
+                  <DropdownMenuItem className="cursor-pointer focus:bg-slate-100 dark:focus:bg-slate-800" onClick={() => setLocation("/profile")}>
+                    <UserCircle2 className="h-4 w-4 text-cyan-700 dark:text-cyan-300" />
                     Meu perfil
                   </DropdownMenuItem>
-                  <DropdownMenuSeparator className="bg-slate-700" />
+                  <DropdownMenuSeparator className="bg-slate-200 dark:bg-slate-700" />
                   <DropdownMenuItem
-                    className="cursor-pointer text-red-300 focus:bg-red-500/15 focus:text-red-200"
+                    className="cursor-pointer text-red-600 focus:bg-red-100 focus:text-red-700 dark:text-red-300 dark:focus:bg-red-500/15 dark:focus:text-red-200"
                     disabled={logoutMutation.isPending}
                     onClick={() => logoutMutation.mutate()}
                   >
@@ -197,7 +200,7 @@ export function Navbar() {
                 key={item.label}
                 href={item.href.replace("/#", "#")}
                 onClick={(event) => handleNavClick(event, item.href)}
-                className="block rounded-xl px-3 py-2 text-sm font-semibold text-slate-200 transition-colors hover:bg-slate-800"
+                className="block rounded-xl px-3 py-2 text-sm font-semibold text-slate-700 transition-colors hover:bg-slate-200 dark:text-slate-200 dark:hover:bg-slate-800"
               >
                 {item.label}
               </a>
@@ -206,12 +209,12 @@ export function Navbar() {
               {isAuthenticated ? (
                 <>
                   <div className="mb-1 flex items-center gap-2 rounded-xl border border-slate-700/80 bg-slate-900/80 px-3 py-2 text-slate-200">
-                    <span className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-cyan-500/20 text-[11px] font-bold text-cyan-200">
+                    <span className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-cyan-100 text-[11px] font-bold text-cyan-700 dark:bg-cyan-500/20 dark:text-cyan-200">
                       {initials}
                     </span>
                     <div>
-                      <p className="text-sm font-semibold leading-tight">{displayName}</p>
-                      <p className="text-[10px] uppercase tracking-[0.14em] text-cyan-300/80">Sessão ativa</p>
+                      <p className="text-sm font-semibold leading-tight text-slate-800 dark:text-slate-100">{displayName}</p>
+                      <p className="text-[10px] uppercase tracking-[0.14em] text-cyan-700/80 dark:text-cyan-300/80">Sessão ativa</p>
                     </div>
                   </div>
                   <Link href="/dashboard" className="flex-1" onClick={() => setMenuOpen(false)}>
@@ -220,13 +223,13 @@ export function Navbar() {
                     </Button>
                   </Link>
                   <Link href="/profile" className="flex-1" onClick={() => setMenuOpen(false)}>
-                    <Button variant="outline" className="w-full rounded-xl border-slate-700 bg-slate-900 text-slate-100 hover:bg-slate-800">
+                    <Button variant="outline" className="w-full rounded-xl border-slate-300 bg-white text-slate-800 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:hover:bg-slate-800">
                       Perfil
                     </Button>
                   </Link>
                   <Button
                     variant="outline"
-                    className="w-full rounded-xl border-red-800/70 bg-red-950/20 font-semibold text-red-200 hover:bg-red-900/30"
+                    className="w-full rounded-xl border-red-300 bg-red-50 font-semibold text-red-700 hover:bg-red-100 dark:border-red-800/70 dark:bg-red-950/20 dark:text-red-200 dark:hover:bg-red-900/30"
                     onClick={() => {
                       setMenuOpen(false);
                       logoutMutation.mutate();
@@ -239,7 +242,7 @@ export function Navbar() {
               ) : (
                 <>
                   <Link href="/auth?tab=login" className="flex-1" onClick={() => setMenuOpen(false)}>
-                    <Button variant="outline" className="w-full rounded-xl font-semibold border-slate-700 bg-slate-900 text-slate-100 hover:bg-slate-800">
+                    <Button variant="outline" className="w-full rounded-xl font-semibold border-slate-300 bg-white text-slate-800 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:hover:bg-slate-800">
                       Login
                     </Button>
                   </Link>
