@@ -2,6 +2,7 @@ import { Navbar } from "@/components/Navbar";
 import { Button } from "@/components/ui/button";
 import { Link, useLocation } from "wouter";
 import { useEffect } from "react";
+import { useQuery } from "@tanstack/react-query";
 import {
   ArrowRight,
   Bot,
@@ -19,6 +20,7 @@ import {
   Zap,
 } from "lucide-react";
 import { motion } from "framer-motion";
+import { fetchMe } from "@/lib/auth";
 
 const WHATSAPP_URL =
   "https://wa.me/5534992322275?text=Ol%C3%A1%2C%20quero%20falar%20com%20vendas%20da%20LexScale.";
@@ -152,6 +154,14 @@ const fadeUp = {
 
 export default function Home() {
   const [location, setLocation] = useLocation();
+  const meQuery = useQuery({
+    queryKey: ["auth-home-me"],
+    queryFn: fetchMe,
+    retry: false,
+    staleTime: 60_000,
+  });
+  const isAuthenticated = Boolean(meQuery.data);
+  const firstName = meQuery.data?.first_name?.trim() || meQuery.data?.full_name?.split(" ")[0] || "você";
 
   const scrollToSection = (id: string) => {
     const section = document.getElementById(id);
@@ -169,6 +179,10 @@ export default function Home() {
   };
 
   const goToRegister = (plan?: string) => {
+    if (isAuthenticated) {
+      setLocation("/dashboard");
+      return;
+    }
     const planQuery = plan ? `&plan=${encodeURIComponent(plan)}` : "";
     setLocation(`/auth?tab=register${planQuery}`);
   };
@@ -229,6 +243,31 @@ export default function Home() {
                 <Search className="mr-2 h-5 w-5" /> Explorar Serviços
               </Button>
             </div>
+
+            {isAuthenticated ? (
+              <motion.div
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.35, ease: "easeOut", delay: 0.1 }}
+                className="mt-5 flex w-full max-w-2xl flex-wrap items-center gap-2 rounded-2xl border border-cyan-400/25 bg-slate-950/45 p-3 backdrop-blur-sm"
+              >
+                <div className="mr-2 flex items-center gap-2 rounded-full border border-cyan-400/30 bg-cyan-500/10 px-3 py-1.5 text-xs font-semibold text-cyan-100">
+                  <span className="inline-block h-2 w-2 rounded-full bg-emerald-300" />
+                  Sessão ativa
+                </div>
+                <p className="mr-auto text-sm text-blue-100/90">Bem-vindo de volta, <strong>{firstName}</strong>.</p>
+                <Link href="/profile">
+                  <Button variant="outline" className="h-9 rounded-full border-slate-600 bg-slate-900/70 px-4 text-xs font-semibold text-slate-100 hover:bg-slate-800">
+                    Meu Perfil
+                  </Button>
+                </Link>
+                <Link href="/dashboard">
+                  <Button className="h-9 rounded-full bg-cyan-500 px-4 text-xs font-bold text-slate-950 hover:bg-cyan-400">
+                    Continuar no Dashboard
+                  </Button>
+                </Link>
+              </motion.div>
+            ) : null}
           </motion.div>
 
           <motion.div
