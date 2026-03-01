@@ -147,3 +147,17 @@ class UploadHistoryItem(BaseModel):
     ai_last_error: Optional[str] = None
     created_at: datetime
     generated_data: UploadHistoryGeneratedData = Field(default_factory=UploadHistoryGeneratedData)
+
+
+class UploadHistoryFilterOptions(BaseModel):
+    judges: List[str] = Field(default_factory=list)
+    tribunals: List[str] = Field(default_factory=list)
+    action_types: List[str] = Field(default_factory=list)
+
+
+class UploadHistoryListResponse(BaseModel):
+    items: List[UploadHistoryItem] = Field(default_factory=list)
+    total_count: int = 0
+    page: int = 1
+    page_size: int = 20
+    total_pages: int = 0

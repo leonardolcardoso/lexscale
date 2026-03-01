@@ -10,7 +10,9 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useToast } from "@/hooks/use-toast";
 import { useBackNavigation } from "@/hooks/use-back-navigation";
 import { login, register } from "@/lib/auth";
+import { queryClient } from "@/lib/queryClient";
 import { cn } from "@/lib/utils";
+import { SiteFooter } from "@/components/site-footer";
 
 export default function AuthPage() {
   const [location, setLocation] = useLocation();
@@ -67,6 +69,7 @@ export default function AuthPage() {
     setErrorMessage(null);
     try {
       await login(loginForm);
+      queryClient.clear();
       toast({ title: "Login realizado", description: "Redirecionando para o dashboard." });
       setLocation("/dashboard", { replace: true });
     } catch (error) {
@@ -84,6 +87,7 @@ export default function AuthPage() {
     setErrorMessage(null);
     try {
       await register(registerForm);
+      queryClient.clear();
       toast({ title: "Conta criada", description: "Bem-vindo(a) ao LexScale." });
       setLocation("/dashboard", { replace: true });
     } catch (error) {
@@ -106,11 +110,11 @@ export default function AuthPage() {
   const authLabelClassName = "auth-field-label text-slate-100";
 
   return (
-    <div className="auth-page relative min-h-screen overflow-hidden bg-slate-950">
+    <div className="auth-page relative flex min-h-screen flex-col overflow-hidden bg-slate-950">
       <div className="auth-page-bg absolute inset-0 bg-[radial-gradient(circle_at_12%_20%,rgba(59,130,246,0.35),transparent_35%),radial-gradient(circle_at_80%_10%,rgba(20,184,166,0.24),transparent_32%),linear-gradient(180deg,#07102a_0%,#060e21_55%,#050a1a_100%)]" />
       <div className="mesh-layer opacity-30" />
 
-      <div className="relative z-10 grid min-h-screen lg:grid-cols-[1.1fr_0.9fr]">
+      <div className="relative z-10 grid flex-1 lg:grid-cols-[1.1fr_0.9fr]">
         <section className="hidden items-center justify-center px-10 py-14 lg:flex xl:px-20">
           <div className="max-w-xl text-slate-100">
             <BrandBadge href="/" className="mb-10" />
@@ -337,6 +341,9 @@ export default function AuthPage() {
             </div>
           </div>
         </section>
+      </div>
+      <div className="relative z-10">
+        <SiteFooter />
       </div>
     </div>
   );

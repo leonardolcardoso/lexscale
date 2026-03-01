@@ -3,6 +3,7 @@ import re
 import threading
 import uuid as uuid_pkg
 import logging
+import unicodedata
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from tempfile import NamedTemporaryFile
@@ -38,8 +39,10 @@ from backend.schemas.cases import (
     CaseListItem,
     RescisoriaAnalysisPayload,
     CaseScoresPayload,
+    UploadHistoryFilterOptions,
     UploadHistoryGeneratedData,
     UploadHistoryItem,
+    UploadHistoryListResponse,
     UploadCaseResponse,
 )
 from backend.schemas.dashboard import CaseContextData, DashboardData
@@ -305,6 +308,29 @@ def _normalize_optional_text(value: Optional[str]) -> Optional[str]:
         return None
     normalized = value.strip()
     return normalized if normalized else None
+
+
+def _normalize_upload_history_status_filter(value: Optional[str]) -> str:
+    raw = (value or "all").strip().lower()
+    if raw in {"in_flight", "completed", "failed"}:
+        return raw
+    return "all"
+
+
+def _as_like_pattern(value: str) -> str:
+    escaped = value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
+
+
+def _normalize_search_text(value: str) -> str:
+    return "".join(ch for ch in unicodedata.normalize("NFD", value) if unicodedata.category(ch) != "Mn").lower().strip()
+
+
+def _normalized_text_expr(column: Any):
+    # PostgreSQL-friendly accent folding for LIKE search without requiring unaccent extension.
+    source_chars = "áàâãäåÁÀÂÃÄÅéèêëÉÈÊËíìîïÍÌÎÏóòôõöÓÒÔÕÖúùûüÚÙÛÜçÇñÑ"
+    target_chars = "aaaaaaAAAAAAeeeeEEEEiiiiIIIIoooooOOOOOuuuuUUUUcCnN"
+    return func.translate(func.lower(func.coalesce(column, "")), source_chars, target_chars)
 
 
 def _normalize_email(value: str) -> str:
@@ -1283,12 +1309,28 @@ def get_case_dashboard_context(
     return snapshot
 
 
-@app.get("/api/cases/upload-history", response_model=List[UploadHistoryItem])
+@app.get("/api/cases/upload-history", response_model=UploadHistoryListResponse)
 def list_upload_history(
-    limit: int = Query(default=60, ge=1, le=500),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    search: Optional[str] = Query(default=None),
+    status_filter: str = Query(default="all"),
+    judge: Optional[str] = Query(default=None),
+    tribunal: Optional[str] = Query(default=None),
+    action_type: Optional[str] = Query(default=None),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-) -> List[UploadHistoryItem]:
+) -> UploadHistoryListResponse:
+    status_filter_norm = _normalize_upload_history_status_filter(status_filter)
+    search_norm_raw = _normalize_optional_text(search)
+    judge_norm_raw = _normalize_optional_text(judge)
+    tribunal_norm_raw = _normalize_optional_text(tribunal)
+    action_type_norm_raw = _normalize_optional_text(action_type)
+    search_norm = _normalize_search_text(search_norm_raw or "") if search_norm_raw else None
+    judge_norm = _normalize_search_text(judge_norm_raw or "") if judge_norm_raw else None
+    tribunal_norm = _normalize_search_text(tribunal_norm_raw or "") if tribunal_norm_raw else None
+    action_type_norm = _normalize_search_text(action_type_norm_raw or "") if action_type_norm_raw else None
+
     latest_document_subquery = (
         db.query(
             ProcessDocument.case_id.label("case_id"),
@@ -1298,7 +1340,9 @@ def list_upload_history(
         .subquery()
     )
 
-    rows = (
+    compact_search_digits = re.sub(r"\D+", "", search_norm or "")
+
+    query = (
         db.query(ProcessCase, ProcessDocument)
         .outerjoin(latest_document_subquery, latest_document_subquery.c.case_id == ProcessCase.id)
         .outerjoin(
@@ -1308,9 +1352,57 @@ def list_upload_history(
                 ProcessDocument.created_at == latest_document_subquery.c.latest_document_created_at,
             ),
         )
-        .filter(ProcessCase.user_id == current_user.id)
-        .order_by(func.coalesce(latest_document_subquery.c.latest_document_created_at, ProcessCase.created_at).desc())
-        .limit(limit)
+    )
+    query = query.filter(ProcessCase.user_id == current_user.id)
+
+    if status_filter_norm == "in_flight":
+        query = query.filter(ProcessCase.ai_status.in_([AI_STATUS_QUEUED, AI_STATUS_PROCESSING, AI_STATUS_FAILED_RETRYABLE]))
+    elif status_filter_norm == "completed":
+        query = query.filter(ProcessCase.ai_status == AI_STATUS_COMPLETED)
+    elif status_filter_norm == "failed":
+        query = query.filter(ProcessCase.ai_status.in_([AI_STATUS_FAILED, AI_STATUS_MANUAL_REVIEW, AI_STATUS_FAILED_RETRYABLE]))
+
+    if judge_norm:
+        query = query.filter(_normalized_text_expr(ProcessCase.judge).like(_as_like_pattern(judge_norm), escape="\\"))
+    if tribunal_norm:
+        query = query.filter(_normalized_text_expr(ProcessCase.tribunal).like(_as_like_pattern(tribunal_norm), escape="\\"))
+    if action_type_norm:
+        query = query.filter(_normalized_text_expr(ProcessCase.action_type).like(_as_like_pattern(action_type_norm), escape="\\"))
+
+    if search_norm:
+        search_pattern = _as_like_pattern(search_norm)
+        search_conditions = [
+            _normalized_text_expr(ProcessDocument.filename).like(search_pattern, escape="\\"),
+            _normalized_text_expr(ProcessCase.process_number).like(search_pattern, escape="\\"),
+            _normalized_text_expr(ProcessCase.title).like(search_pattern, escape="\\"),
+            _normalized_text_expr(ProcessCase.tribunal).like(search_pattern, escape="\\"),
+            _normalized_text_expr(ProcessCase.judge).like(search_pattern, escape="\\"),
+            _normalized_text_expr(ProcessCase.action_type).like(search_pattern, escape="\\"),
+            _normalized_text_expr(ProcessCase.status).like(search_pattern, escape="\\"),
+        ]
+        if compact_search_digits:
+            compact_process = func.replace(
+                func.replace(
+                    func.replace(
+                        func.replace(func.coalesce(ProcessCase.process_number, ""), ".", ""),
+                        "-",
+                        "",
+                    ),
+                    "/",
+                    "",
+                ),
+                " ",
+                "",
+            )
+            search_conditions.append(compact_process.like(f"%{compact_search_digits}%"))
+        query = query.filter(or_(*search_conditions))
+
+    total_count = int(query.with_entities(func.count(func.distinct(ProcessCase.id))).scalar() or 0)
+
+    rows = (
+        query.order_by(func.coalesce(latest_document_subquery.c.latest_document_created_at, ProcessCase.created_at).desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
         .all()
     )
 
@@ -1366,7 +1458,50 @@ def list_upload_history(
                 ),
             ),
         )
-    return items
+    total_pages = (total_count + page_size - 1) // page_size if total_count > 0 else 0
+    return UploadHistoryListResponse(
+        items=items,
+        total_count=total_count,
+        page=page,
+        page_size=page_size,
+        total_pages=total_pages,
+    )
+
+
+@app.get("/api/cases/upload-history/filters", response_model=UploadHistoryFilterOptions)
+def list_upload_history_filters(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> UploadHistoryFilterOptions:
+    base_query = db.query(ProcessCase).filter(ProcessCase.user_id == current_user.id)
+
+    judges_rows = (
+        base_query.with_entities(ProcessCase.judge)
+        .filter(ProcessCase.judge.isnot(None), func.length(func.trim(ProcessCase.judge)) > 0)
+        .distinct()
+        .order_by(ProcessCase.judge.asc())
+        .all()
+    )
+    tribunals_rows = (
+        base_query.with_entities(ProcessCase.tribunal)
+        .filter(ProcessCase.tribunal.isnot(None), func.length(func.trim(ProcessCase.tribunal)) > 0)
+        .distinct()
+        .order_by(ProcessCase.tribunal.asc())
+        .all()
+    )
+    action_types_rows = (
+        base_query.with_entities(ProcessCase.action_type)
+        .filter(ProcessCase.action_type.isnot(None), func.length(func.trim(ProcessCase.action_type)) > 0)
+        .distinct()
+        .order_by(ProcessCase.action_type.asc())
+        .all()
+    )
+
+    return UploadHistoryFilterOptions(
+        judges=[row[0] for row in judges_rows if row[0]],
+        tribunals=[row[0] for row in tribunals_rows if row[0]],
+        action_types=[row[0] for row in action_types_rows if row[0]],
+    )
 
 
 @app.post("/api/cases/extract", response_model=CaseExtractionPreviewResponse)
@@ -1665,6 +1800,19 @@ def delete_case(
 
     # Coletar caminhos dos arquivos antes de deletar (cascade remove os registros)
     paths_to_delete = [Path(doc.storage_path) for doc in case.documents if doc.storage_path]
+
+    # Limpar alertas estratégicos que ainda apontam para este case_id.
+    db.execute(
+        text(
+            """
+            DELETE FROM strategic_alerts
+            WHERE user_id = :user_id
+              AND action_target IS NOT NULL
+              AND action_target::jsonb ->> 'case_id' = :case_id
+            """,
+        ),
+        {"user_id": current_user.id, "case_id": str(case.id)},
+    )
 
     db.delete(case)
     db.commit()

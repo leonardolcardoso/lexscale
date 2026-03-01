@@ -11,6 +11,7 @@ import { useToast } from "@/hooks/use-toast";
 import { useBackNavigation } from "@/hooks/use-back-navigation";
 import { fetchProfile, isUnauthorizedError, logout, updateProfile } from "@/lib/auth";
 import { mapNetworkError, parseApiErrorResponse } from "@/lib/http-errors";
+import { SiteFooter } from "@/components/site-footer";
 
 export default function ProfilePage() {
   const [, setLocation] = useLocation();
@@ -158,11 +159,11 @@ export default function ProfilePage() {
   const fieldGroupClass = "flex min-w-0 flex-col gap-2.5";
 
   return (
-    <div className="profile-shell relative isolate min-h-screen overflow-hidden bg-[radial-gradient(circle_at_15%_10%,rgba(59,130,246,0.14),transparent_40%),radial-gradient(circle_at_85%_0%,rgba(20,184,166,0.1),transparent_35%),linear-gradient(180deg,#f8fbff_0%,#eef5ff_100%)] p-4 dark:bg-[radial-gradient(circle_at_15%_10%,rgba(59,130,246,0.28),transparent_40%),radial-gradient(circle_at_85%_0%,rgba(20,184,166,0.2),transparent_35%),linear-gradient(180deg,#050b1d_0%,#040916_100%)] sm:p-6 md:p-10">
+    <div className="profile-shell relative isolate flex min-h-screen flex-col overflow-hidden bg-[radial-gradient(circle_at_15%_10%,rgba(59,130,246,0.14),transparent_40%),radial-gradient(circle_at_85%_0%,rgba(20,184,166,0.1),transparent_35%),linear-gradient(180deg,#f8fbff_0%,#eef5ff_100%)] dark:bg-[radial-gradient(circle_at_15%_10%,rgba(59,130,246,0.28),transparent_40%),radial-gradient(circle_at_85%_0%,rgba(20,184,166,0.2),transparent_35%),linear-gradient(180deg,#050b1d_0%,#040916_100%)]">
       <div className="pointer-events-none absolute inset-0 opacity-30 [background-image:linear-gradient(rgba(148,163,184,0.08)_1px,transparent_1px),linear-gradient(90deg,rgba(148,163,184,0.08)_1px,transparent_1px)] [background-size:36px_36px] [mask-image:radial-gradient(circle_at_top,black_15%,transparent_72%)]" />
       <div className="pointer-events-none absolute -top-24 left-1/2 h-72 w-72 -translate-x-1/2 rounded-full bg-cyan-500/15 blur-[110px]" />
 
-      <div className="relative mx-auto w-full max-w-5xl space-y-5">
+      <div className="relative mx-auto w-full max-w-5xl flex-1 space-y-5 p-4 sm:p-6 md:p-10">
         <header className="flex flex-wrap items-center justify-between gap-3">
           <div className="space-y-1">
             <Link href="/" className="inline-flex items-center gap-2 text-slate-900 dark:text-white">
@@ -337,6 +338,9 @@ export default function ProfilePage() {
             </section>
           </CardContent>
         </Card>
+      </div>
+      <div className="relative z-10">
+        <SiteFooter />
       </div>
     </div>
   );

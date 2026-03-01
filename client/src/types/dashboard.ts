@@ -96,6 +96,13 @@ export type DashboardData = {
       trend: string;
       trend_color: string;
       unit?: string;
+      sample_user?: number;
+      sample_market?: number;
+      min_user_observations?: number;
+      min_market_observations?: number;
+      is_comparable?: boolean;
+      confidence_level?: "high" | "medium" | "low" | string;
+      confidence_label?: string;
     }>;
   };
   simulacoes: {
@@ -290,4 +297,26 @@ export type UploadHistoryItem = {
   ai_last_error?: string | null;
   created_at: string;
   generated_data: UploadHistoryGeneratedData;
+};
+
+export type UploadHistoryQueryFilters = {
+  search: string;
+  status_filter: "all" | "in_flight" | "completed" | "failed";
+  judge: string;
+  tribunal: string;
+  action_type: string;
+};
+
+export type UploadHistoryFilterOptions = {
+  judges: string[];
+  tribunals: string[];
+  action_types: string[];
+};
+
+export type UploadHistoryListResponse = {
+  items: UploadHistoryItem[];
+  total_count: number;
+  page: number;
+  page_size: number;
+  total_pages: number;
 };

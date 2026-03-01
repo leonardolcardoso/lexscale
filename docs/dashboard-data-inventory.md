@@ -97,6 +97,13 @@ Cada item:
 - `trend`
 - `trend_color`
 - `unit` (opcional)
+- `sample_user` (opcional)
+- `sample_market` (opcional)
+- `min_user_observations` (opcional)
+- `min_market_observations` (opcional)
+- `is_comparable` (opcional)
+- `confidence_level` (opcional)
+- `confidence_label` (opcional)
 
 ### 3.4 Ações Rescisórias
 - `summary`

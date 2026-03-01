@@ -45,6 +45,9 @@ from backend.services.rescisory import evaluate_case_rescisoria, parse_rescisori
 
 logger = logging.getLogger("backend.services.dashboard")
 
+BENCHMARK_MIN_USER_OBSERVATIONS = 10
+BENCHMARK_MIN_MARKET_OBSERVATIONS = 30
+
 
 def _is_all_filter(value: str, defaults: Sequence[str]) -> bool:
     normalized = _normalize_text(value)
@@ -168,6 +171,25 @@ def _safe_mean(values: List[float], default: float) -> float:
 
 def _pct(value: float) -> str:
     return f"{round(_clamp(value, 0.0, 1.0) * 100)}%"
+
+
+def _has_min_benchmark_sample(user_count: int, market_count: int) -> bool:
+    return user_count >= BENCHMARK_MIN_USER_OBSERVATIONS and market_count >= BENCHMARK_MIN_MARKET_OBSERVATIONS
+
+
+def _benchmark_confidence(user_count: int, market_count: int) -> Tuple[str, str]:
+    if user_count <= 0 or market_count <= 0:
+        return "low", "Baixa"
+
+    user_ratio = user_count / BENCHMARK_MIN_USER_OBSERVATIONS
+    market_ratio = market_count / BENCHMARK_MIN_MARKET_OBSERVATIONS
+    coverage = min(user_ratio, market_ratio)
+
+    if coverage >= 2.0:
+        return "high", "Alta"
+    if coverage >= 1.3:
+        return "medium", "Média"
+    return "low", "Baixa"
 
 
 def _clamp(value: float, low: float, high: float) -> float:
@@ -602,21 +624,24 @@ def build_dashboard_data(
     filtered_global_cases = _filter_cases(all_cases_global, tribunal, juiz, tipo_acao, faixa_valor, periodo)
     filtered_public = _filter_public_records(all_public, tribunal, juiz, tipo_acao, faixa_valor, periodo)
 
-    success_values: List[float] = []
+    user_success_values: List[float] = []
     for item in filtered_user_cases:
         prob = _normalize_probability(item.success_probability)
         if prob is not None:
-            success_values.append(prob)
+            user_success_values.append(prob)
+    success_values: List[float] = list(user_success_values)
     success_values += [1.0 if item.is_success else 0.0 for item in filtered_public if item.is_success is not None]
 
-    settlement_values: List[float] = []
+    user_settlement_values: List[float] = []
     for item in filtered_user_cases:
         prob = _normalize_probability(item.settlement_probability)
         if prob is not None:
-            settlement_values.append(prob)
+            user_settlement_values.append(prob)
+    settlement_values: List[float] = list(user_settlement_values)
     settlement_values += [1.0 if item.is_settlement else 0.0 for item in filtered_public if item.is_settlement is not None]
 
-    months_values = [float(item.expected_decision_months) for item in filtered_user_cases if item.expected_decision_months is not None]
+    user_months_values = [float(item.expected_decision_months) for item in filtered_user_cases if item.expected_decision_months is not None]
+    months_values = list(user_months_values)
     months_values += [(item.duration_days or 0) / 30 for item in filtered_public if item.duration_days]
 
     risk_values = [
@@ -691,6 +716,12 @@ def build_dashboard_data(
     sample_public = len(filtered_public)
     sample_total = sample_user + sample_public
     market_sample_total = len(filtered_global_cases) + len(filtered_public)
+    user_success_sample_count = len(user_success_values)
+    user_settlement_sample_count = len(user_settlement_values)
+    user_duration_sample_count = len(user_months_values)
+    market_success_sample_count = len(market_success_values)
+    market_settlement_sample_count = len(market_settlement_values)
+    market_duration_sample_count = len(market_months_values)
     success_sample_count = len(success_values)
     settlement_sample_count = len(settlement_values)
     duration_sample_count = len(months_values)
@@ -868,13 +899,57 @@ def build_dashboard_data(
         critical_deadlines=critical_deadlines,
     )
 
-    exito_gap = round((success_rate - market_success) * 100)
-    acordo_gap = round((settlement_rate - market_settlement) * 100)
-    if market_months > 0:
-        months_gap = round(((market_months - avg_months) / market_months) * 100)
-        months_trend = f"{months_gap}% mais rápido"
+    user_success_rate = _safe_mean(user_success_values, 0.0)
+    user_settlement_rate = _safe_mean(user_settlement_values, 0.0)
+    user_avg_months = _safe_mean(user_months_values, 0.0)
+
+    success_comparable = _has_min_benchmark_sample(user_success_sample_count, market_success_sample_count)
+    settlement_comparable = _has_min_benchmark_sample(user_settlement_sample_count, market_settlement_sample_count)
+    duration_comparable = _has_min_benchmark_sample(user_duration_sample_count, market_duration_sample_count)
+
+    if success_comparable:
+        exito_gap = round((user_success_rate - market_success) * 100)
+        success_trend = f"{exito_gap:+d}% vs mercado"
+        success_trend_color = "emerald" if exito_gap >= 0 else "orange"
     else:
+        success_trend = "Amostra insuficiente"
+        success_trend_color = "blue"
+
+    if settlement_comparable:
+        acordo_gap = round((user_settlement_rate - market_settlement) * 100)
+        settlement_trend = f"{acordo_gap:+d}% vs mercado"
+        settlement_trend_color = "emerald" if acordo_gap >= 0 else "orange"
+    else:
+        settlement_trend = "Amostra insuficiente"
+        settlement_trend_color = "blue"
+
+    if duration_comparable and market_months > 0:
+        months_gap = round(((market_months - user_avg_months) / market_months) * 100)
+        if months_gap >= 0:
+            months_trend = f"{months_gap}% mais rápido"
+            months_trend_color = "emerald"
+        else:
+            months_trend = f"{abs(months_gap)}% mais lento"
+            months_trend_color = "orange"
+    elif duration_comparable:
         months_trend = "Sem base comparável"
+        months_trend_color = "blue"
+    else:
+        months_trend = "Amostra insuficiente"
+        months_trend_color = "blue"
+
+    benchmark_success_user = _pct(user_success_rate) if user_success_sample_count > 0 else "N/D"
+    benchmark_success_market = _pct(market_success) if market_success_sample_count > 0 else "N/D"
+    benchmark_settlement_user = _pct(user_settlement_rate) if user_settlement_sample_count > 0 else "N/D"
+    benchmark_settlement_market = _pct(market_settlement) if market_settlement_sample_count > 0 else "N/D"
+    benchmark_months_user = f"{user_avg_months:.1f}" if user_duration_sample_count > 0 else "N/D"
+    benchmark_months_market = f"{market_months:.1f}" if market_duration_sample_count > 0 else "N/D"
+    success_confidence_level, success_confidence_label = _benchmark_confidence(user_success_sample_count, market_success_sample_count)
+    duration_confidence_level, duration_confidence_label = _benchmark_confidence(user_duration_sample_count, market_duration_sample_count)
+    settlement_confidence_level, settlement_confidence_label = _benchmark_confidence(
+        user_settlement_sample_count,
+        market_settlement_sample_count,
+    )
 
     acoes_rescisorias = _build_rescisoria_data(filtered_user_cases)
 
@@ -885,25 +960,46 @@ def build_dashboard_data(
         benchmark=[
             BenchmarkData(
                 label="Taxa de Êxito",
-                user=_pct(success_rate),
-                market=_pct(market_success),
-                trend=f"{exito_gap:+d}% vs mercado",
-                trend_color="emerald" if exito_gap >= 0 else "orange",
+                user=benchmark_success_user,
+                market=benchmark_success_market,
+                trend=success_trend,
+                trend_color=success_trend_color,
+                sample_user=user_success_sample_count,
+                sample_market=market_success_sample_count,
+                min_user_observations=BENCHMARK_MIN_USER_OBSERVATIONS,
+                min_market_observations=BENCHMARK_MIN_MARKET_OBSERVATIONS,
+                is_comparable=success_comparable,
+                confidence_level=success_confidence_level,
+                confidence_label=success_confidence_label,
             ),
             BenchmarkData(
                 label="Tempo Médio",
-                user=f"{avg_months:.1f}" if months_values else "N/D",
-                market=f"{market_months:.1f}" if market_months_values else "N/D",
+                user=benchmark_months_user,
+                market=benchmark_months_market,
                 trend=months_trend,
-                trend_color="emerald" if (market_months > 0 and avg_months <= market_months) else "orange",
+                trend_color=months_trend_color,
                 unit="meses",
+                sample_user=user_duration_sample_count,
+                sample_market=market_duration_sample_count,
+                min_user_observations=BENCHMARK_MIN_USER_OBSERVATIONS,
+                min_market_observations=BENCHMARK_MIN_MARKET_OBSERVATIONS,
+                is_comparable=duration_comparable,
+                confidence_level=duration_confidence_level,
+                confidence_label=duration_confidence_label,
             ),
             BenchmarkData(
                 label="Taxa de Acordo",
-                user=_pct(settlement_rate),
-                market=_pct(market_settlement),
-                trend=f"{acordo_gap:+d}% vs mercado",
-                trend_color="emerald" if acordo_gap >= 0 else "orange",
+                user=benchmark_settlement_user,
+                market=benchmark_settlement_market,
+                trend=settlement_trend,
+                trend_color=settlement_trend_color,
+                sample_user=user_settlement_sample_count,
+                sample_market=market_settlement_sample_count,
+                min_user_observations=BENCHMARK_MIN_USER_OBSERVATIONS,
+                min_market_observations=BENCHMARK_MIN_MARKET_OBSERVATIONS,
+                is_comparable=settlement_comparable,
+                confidence_level=settlement_confidence_level,
+                confidence_label=settlement_confidence_label,
             ),
         ],
         acoes_rescisorias=acoes_rescisorias,

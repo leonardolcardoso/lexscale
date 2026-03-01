@@ -40,7 +40,10 @@ import type {
   CaseExtractionPreviewResponse,
   DashboardData,
   DashboardFilters,
+  UploadHistoryFilterOptions,
   UploadHistoryItem,
+  UploadHistoryListResponse,
+  UploadHistoryQueryFilters,
   UploadCaseResponse,
   UserCaseListItem,
 } from "@/types/dashboard";
@@ -63,6 +66,15 @@ const DEFAULT_FILTERS: DashboardFilters = {
   faixa_valor: "Todos os Valores",
   periodo: "Últimos 6 meses",
 };
+
+const DEFAULT_UPLOAD_HISTORY_QUERY_FILTERS: UploadHistoryQueryFilters = {
+  search: "",
+  status_filter: "all",
+  judge: "",
+  tribunal: "",
+  action_type: "",
+};
+const UPLOAD_HISTORY_PAGE_SIZE = 20;
 
 const FILTER_OPTIONS = {
   tribunal: ["Todos os Tribunais", "TJSP", "TJRJ", "TJDFT", "TRF5", "TRT2", "TRF3", "STJ"],
@@ -519,14 +531,61 @@ async function fetchUserCases(limit = 30): Promise<UserCaseListItem[]> {
   }
 }
 
-async function fetchUploadHistory(limit = 80): Promise<UploadHistoryItem[]> {
+async function fetchUploadHistory(
+  page: number,
+  pageSize: number,
+  filters: UploadHistoryQueryFilters = DEFAULT_UPLOAD_HISTORY_QUERY_FILTERS,
+): Promise<UploadHistoryListResponse> {
   try {
     const params = new URLSearchParams();
-    params.set("limit", String(limit));
+    params.set("page", String(page));
+    params.set("page_size", String(pageSize));
+    if (filters.search.trim()) params.set("search", filters.search.trim());
+    if (filters.status_filter !== "all") params.set("status_filter", filters.status_filter);
+    if (filters.judge.trim()) params.set("judge", filters.judge.trim());
+    if (filters.tribunal.trim()) params.set("tribunal", filters.tribunal.trim());
+    if (filters.action_type.trim()) params.set("action_type", filters.action_type.trim());
     const res = await fetch(`/api/cases/upload-history?${params.toString()}`, { credentials: "include" });
-    return await parseJsonOrThrow<UploadHistoryItem[]>(res);
+    const payload = await parseJsonOrThrow<UploadHistoryListResponse | UploadHistoryItem[]>(res);
+    if (Array.isArray(payload)) {
+      // Compatibilidade com backend legado: retornava lista simples sem metadados de paginação.
+      return {
+        items: payload,
+        total_count: payload.length,
+        page,
+        page_size: pageSize,
+        total_pages: payload.length > 0 ? Math.ceil(payload.length / pageSize) : 0,
+      };
+    }
+    return {
+      items: Array.isArray(payload.items) ? payload.items : [],
+      total_count: typeof payload.total_count === "number" ? payload.total_count : Array.isArray(payload.items) ? payload.items.length : 0,
+      page: typeof payload.page === "number" ? payload.page : page,
+      page_size: typeof payload.page_size === "number" ? payload.page_size : pageSize,
+      total_pages:
+        typeof payload.total_pages === "number"
+          ? payload.total_pages
+          : typeof payload.total_count === "number"
+            ? payload.total_count > 0
+              ? Math.ceil(payload.total_count / pageSize)
+              : 0
+            : 0,
+    };
   } catch (error) {
     throw mapNetworkError(error, "Não foi possível carregar o histórico de uploads agora.");
+  }
+}
+
+async function fetchUploadHistoryFilterOptions(): Promise<UploadHistoryFilterOptions> {
+  try {
+    const res = await fetch("/api/cases/upload-history/filters", { credentials: "include" });
+    if (res.status === 404) {
+      // Compatibilidade com backend legado: rota de opções ainda inexistente.
+      return { judges: [], tribunals: [], action_types: [] };
+    }
+    return await parseJsonOrThrow<UploadHistoryFilterOptions>(res);
+  } catch (error) {
+    throw mapNetworkError(error, "Não foi possível carregar os filtros do histórico agora.");
   }
 }
 
@@ -906,6 +965,8 @@ export default function Dashboard() {
   const [selectedCardDetail, setSelectedCardDetail] = useState<CardDetail | null>(null);
   const [selectedSimilarProcess, setSelectedSimilarProcess] = useState<SimilarProcessDetail | null>(null);
   const [selectedHistoryCase, setSelectedHistoryCase] = useState<UploadHistoryItem | null>(null);
+  const [uploadHistoryFilters, setUploadHistoryFilters] = useState<UploadHistoryQueryFilters>(DEFAULT_UPLOAD_HISTORY_QUERY_FILTERS);
+  const [uploadHistoryPage, setUploadHistoryPage] = useState(1);
   const [isStrategicRecommendationsModalOpen, setIsStrategicRecommendationsModalOpen] = useState(false);
   const hasTriggeredInitialStrategicScan = useRef(false);
   const seenStrategicAlertIds = useRef<Set<string>>(new Set());
@@ -913,6 +974,11 @@ export default function Dashboard() {
   const casesLifecycleSignatureRef = useRef<string>("");
   const [isCasePollingBoosted, setIsCasePollingBoosted] = useState(false);
   const [lastSyncAt, setLastSyncAt] = useState<string | null>(null);
+
+  const handleUploadHistoryFiltersChange = useCallback((next: UploadHistoryQueryFilters) => {
+    setUploadHistoryFilters(next);
+    setUploadHistoryPage(1);
+  }, []);
 
   const activateCasePollingBoost = useCallback((durationMs = 2 * 60 * 1000) => {
     if (casePollingBoostTimeoutRef.current) {
@@ -989,6 +1055,7 @@ export default function Dashboard() {
     enabled: !isDemoMode,
     retry: false,
   });
+  const userCasesQueryKey = ["user-cases", meQuery.data?.user_id ?? "unknown-user"] as const;
 
   const dashboardQuery = useQuery({
     queryKey: ["dashboard-data", isDemoMode ? "demo" : "live", appliedFilters],
@@ -1009,7 +1076,7 @@ export default function Dashboard() {
   });
 
   const userCasesQuery = useQuery({
-    queryKey: ["user-cases"],
+    queryKey: userCasesQueryKey,
     queryFn: () => fetchUserCases(30),
     enabled: !isDemoMode && meQuery.isSuccess,
     retry: false,
@@ -1018,11 +1085,20 @@ export default function Dashboard() {
   });
 
   const uploadHistoryQuery = useQuery({
-    queryKey: ["upload-history"],
-    queryFn: () => fetchUploadHistory(80),
+    queryKey: ["upload-history", uploadHistoryFilters, uploadHistoryPage, UPLOAD_HISTORY_PAGE_SIZE],
+    queryFn: () => fetchUploadHistory(uploadHistoryPage, UPLOAD_HISTORY_PAGE_SIZE, uploadHistoryFilters),
     enabled: !isDemoMode && meQuery.isSuccess,
     retry: false,
     refetchInterval: isCasePollingBoosted ? 7000 : 25000,
+    refetchIntervalInBackground: true,
+  });
+
+  const uploadHistoryFilterOptionsQuery = useQuery({
+    queryKey: ["upload-history", "filters"],
+    queryFn: fetchUploadHistoryFilterOptions,
+    enabled: !isDemoMode && meQuery.isSuccess,
+    retry: false,
+    refetchInterval: isCasePollingBoosted ? 15000 : 45000,
     refetchIntervalInBackground: true,
   });
 
@@ -1061,7 +1137,7 @@ export default function Dashboard() {
   const reprocessCaseMutation = useMutation<CaseAIStatusResponse, Error, string>({
     mutationFn: (caseId: string) => reprocessCaseAI(caseId),
     onSuccess: (payload) => {
-      queryClient.setQueryData<UserCaseListItem[]>(["user-cases"], (previous) =>
+      queryClient.setQueryData<UserCaseListItem[]>(userCasesQueryKey, (previous) =>
         (previous ?? []).map((item) =>
           item.case_id === payload.case_id
             ? {
@@ -1079,24 +1155,28 @@ export default function Dashboard() {
             : item,
         ),
       );
-      queryClient.setQueryData<UploadHistoryItem[]>(["upload-history"], (previous) =>
-        (previous ?? []).map((item) =>
-          item.case_id === payload.case_id
-            ? {
-                ...item,
-                ai_status: payload.ai_status,
-                ai_attempts: payload.ai_attempts,
-                ai_stage: payload.ai_stage ?? item.ai_stage ?? "extraction",
-                ai_stage_label: payload.ai_stage_label ?? item.ai_stage_label ?? null,
-                ai_progress_percent: payload.ai_progress_percent ?? item.ai_progress_percent ?? null,
-                ai_stage_updated_at: payload.ai_stage_updated_at ?? item.ai_stage_updated_at ?? null,
-                ai_next_retry_at: payload.ai_next_retry_at ?? null,
-                ai_processed_at: payload.ai_processed_at ?? null,
-                ai_last_error: payload.ai_last_error ?? null,
-              }
-            : item,
-        ),
-      );
+      queryClient.setQueriesData<UploadHistoryListResponse>({ queryKey: ["upload-history"] }, (previous) => {
+        if (!previous) return previous;
+        return {
+          ...previous,
+          items: previous.items.map((item) =>
+            item.case_id === payload.case_id
+              ? {
+                  ...item,
+                  ai_status: payload.ai_status,
+                  ai_attempts: payload.ai_attempts,
+                  ai_stage: payload.ai_stage ?? item.ai_stage ?? "extraction",
+                  ai_stage_label: payload.ai_stage_label ?? item.ai_stage_label ?? null,
+                  ai_progress_percent: payload.ai_progress_percent ?? item.ai_progress_percent ?? null,
+                  ai_stage_updated_at: payload.ai_stage_updated_at ?? item.ai_stage_updated_at ?? null,
+                  ai_next_retry_at: payload.ai_next_retry_at ?? null,
+                  ai_processed_at: payload.ai_processed_at ?? null,
+                  ai_last_error: payload.ai_last_error ?? null,
+                }
+              : item,
+          ),
+        };
+      });
       activateCasePollingBoost();
 
       toast({
@@ -1115,7 +1195,23 @@ export default function Dashboard() {
 
   const deleteCaseMutation = useMutation({
     mutationFn: (caseId: string) => deleteCase(caseId),
-    onSuccess: (caseId) => {
+    onSuccess: (_data, caseId) => {
+      queryClient.setQueryData<UserCaseListItem[]>(userCasesQueryKey, (previous) =>
+        (previous ?? []).filter((item) => item.case_id !== caseId),
+      );
+      queryClient.setQueriesData<UploadHistoryListResponse>({ queryKey: ["upload-history"] }, (previous) => {
+        if (!previous) return previous;
+        const nextItems = previous.items.filter((item) => item.case_id !== caseId);
+        if (nextItems.length === previous.items.length) return previous;
+        const nextTotalCount = Math.max(0, previous.total_count - 1);
+        const nextTotalPages = nextTotalCount > 0 ? Math.ceil(nextTotalCount / previous.page_size) : 0;
+        return {
+          ...previous,
+          items: nextItems,
+          total_count: nextTotalCount,
+          total_pages: nextTotalPages,
+        };
+      });
       queryClient.invalidateQueries({ queryKey: ["upload-history"] });
       queryClient.invalidateQueries({ queryKey: ["user-cases"] });
       queryClient.invalidateQueries({ queryKey: ["dashboard-data"] });
@@ -1223,12 +1319,6 @@ export default function Dashboard() {
       const extracted = payload.extracted || {};
       const extractedProcess = extracted.process_number || payload.process_number || "";
       const { numericValue: extractedClaimValueNumeric } = parseExtractedClaimValue((extracted as { claim_value?: unknown }).claim_value);
-      const selectedFilename = uploadFile?.name || null;
-      const selectedFileContentType = uploadFile?.type || null;
-      const optimisticFavorability = resolveFavorabilitySummary({
-        successProbability: payload.scores?.success_probability ?? null,
-        userParty: uploadForm.user_party === "author" || uploadForm.user_party === "defendant" ? uploadForm.user_party : null,
-      });
 
       toast({
         title: "Processo enviado",
@@ -1245,7 +1335,7 @@ export default function Dashboard() {
       });
       setUploadFile(null);
       applyExtractedUploadForm(extracted, payload.process_number);
-      queryClient.setQueryData<UserCaseListItem[]>(["user-cases"], (previous) => {
+      queryClient.setQueryData<UserCaseListItem[]>(userCasesQueryKey, (previous) => {
         const optimisticItem: UserCaseListItem = {
           case_id: payload.case_id,
           process_number: extractedProcess || payload.process_number,
@@ -1273,56 +1363,6 @@ export default function Dashboard() {
 
         const deduped = (previous ?? []).filter((item) => item.case_id !== optimisticItem.case_id);
         return [optimisticItem, ...deduped].slice(0, 30);
-      });
-      queryClient.setQueryData<UploadHistoryItem[]>(["upload-history"], (previous) => {
-        const optimisticHistoryItem: UploadHistoryItem = {
-          case_id: payload.case_id,
-          process_number: extractedProcess || payload.process_number,
-          user_party: uploadForm.user_party === "author" || uploadForm.user_party === "defendant" ? uploadForm.user_party : undefined,
-          case_title: extracted.title ?? null,
-          filename: selectedFilename,
-          content_type: selectedFileContentType,
-          tribunal: extracted.tribunal ?? uploadForm.tribunal ?? null,
-          judge: extracted.judge ?? uploadForm.judge ?? null,
-          action_type: extracted.action_type ?? uploadForm.action_type ?? null,
-          claim_value: extractedClaimValueNumeric,
-          status: extracted.status ?? null,
-          ai_status: payload.ai_status,
-          ai_attempts: payload.ai_attempts,
-          ai_stage: payload.ai_stage ?? "extraction",
-          ai_stage_label: payload.ai_stage_label ?? "Extração concluída, aguardando análise por IA.",
-          ai_progress_percent: payload.ai_progress_percent ?? 25,
-          ai_stage_updated_at: payload.ai_stage_updated_at ?? null,
-          ai_next_retry_at: payload.ai_next_retry_at ?? null,
-          ai_processed_at: null,
-          ai_last_error: payload.ai_last_error ?? null,
-          created_at: payload.created_at,
-          generated_data: {
-            extracted: {
-              process_number: extracted.process_number ?? null,
-              title: extracted.title ?? null,
-              tribunal: extracted.tribunal ?? null,
-              judge: extracted.judge ?? null,
-              action_type: extracted.action_type ?? null,
-              claim_value: extractedClaimValueNumeric,
-              status: extracted.status ?? null,
-              parties: {},
-              key_facts: [],
-              deadlines: [],
-            },
-            success_probability: payload.scores?.success_probability ?? null,
-            settlement_probability: payload.scores?.settlement_probability ?? null,
-            expected_decision_months: payload.scores?.expected_decision_months ?? null,
-            risk_score: payload.scores?.risk_score ?? null,
-            complexity_score: payload.scores?.complexity_score ?? null,
-            ai_summary: payload.scores?.ai_summary ?? null,
-            favorable_to_user_pct: optimisticFavorability?.userPct ?? null,
-            favorable_to_counterparty_pct: optimisticFavorability?.counterpartyPct ?? null,
-          },
-        };
-
-        const deduped = (previous ?? []).filter((item) => item.case_id !== optimisticHistoryItem.case_id);
-        return [optimisticHistoryItem, ...deduped].slice(0, 80);
       });
       activateCasePollingBoost();
       refreshDashboardAndRelatedData();
@@ -1374,9 +1414,25 @@ export default function Dashboard() {
   const strategicAlertItems = strategicAlertsQuery.data?.items ?? [];
   const userCases = userCasesQuery.data ?? [];
   const uploadHistoryItems = useMemo(
-    () => (isDemoMode ? buildMockUploadHistory(appliedFilters) : uploadHistoryQuery.data ?? []),
+    () => (isDemoMode ? buildMockUploadHistory(appliedFilters) : uploadHistoryQuery.data?.items ?? []),
     [appliedFilters, isDemoMode, uploadHistoryQuery.data],
   );
+  const uploadHistoryTotalCount = isDemoMode ? uploadHistoryItems.length : uploadHistoryQuery.data?.total_count ?? 0;
+  const uploadHistoryTotalPages = isDemoMode
+    ? 1
+    : uploadHistoryQuery.data?.total_pages ?? Math.ceil(uploadHistoryTotalCount / UPLOAD_HISTORY_PAGE_SIZE);
+
+  useEffect(() => {
+    if (isDemoMode) return;
+    if (uploadHistoryTotalPages === 0 && uploadHistoryPage !== 1) {
+      setUploadHistoryPage(1);
+      return;
+    }
+    if (uploadHistoryTotalPages > 0 && uploadHistoryPage > uploadHistoryTotalPages) {
+      setUploadHistoryPage(uploadHistoryTotalPages);
+    }
+  }, [isDemoMode, uploadHistoryPage, uploadHistoryTotalPages]);
+
   const selectedHistoryContextData = useMemo(() => {
     if (!selectedHistoryCase) return null;
     if (isDemoMode) {
@@ -2482,6 +2538,14 @@ export default function Dashboard() {
                 onOpenCompleteAnalysis={(item) => setSelectedHistoryCase(item)}
                 onDeleteCase={(caseId) => deleteCaseMutation.mutate(caseId)}
                 isDeletingCaseId={deleteCaseMutation.isPending ? deleteCaseMutation.variables : null}
+                serverFilters={uploadHistoryFilters}
+                onServerFiltersChange={handleUploadHistoryFiltersChange}
+                filterOptions={uploadHistoryFilterOptionsQuery.data}
+                currentPage={uploadHistoryPage}
+                pageSize={UPLOAD_HISTORY_PAGE_SIZE}
+                totalCount={uploadHistoryTotalCount}
+                totalPages={uploadHistoryTotalPages}
+                onPageChange={setUploadHistoryPage}
                 onOpenRescisoriaCase={(caseId) => {
                   setActiveTab("inteligencia");
                   setStrategicModule("acoes-rescisorias");
@@ -2791,10 +2855,10 @@ function VisaoGeralView({
                   </div>
                   <h4 className="font-bold text-xl">Insights Narrativos por IA</h4>
                 </div>
-                <div className="space-y-4 text-sm text-blue-50/90 leading-relaxed">
+                <div className="space-y-4 text-sm leading-relaxed text-white/90 dark:text-blue-50/90">
                   {data.visao_geral.insights.slice(0, 3).map((insight, idx) => (
                     <p key={idx}>
-                      <strong>{insight.title}:</strong> {insight.text}
+                      <strong className="text-white">{insight.title}:</strong> {insight.text}
                     </p>
                   ))}
                 </div>
@@ -2982,25 +3046,54 @@ function InteligenciaView({
           <h3 className="font-bold uppercase tracking-tight text-sm">Benchmark vs Mercado</h3>
         </div>
         <div className="grid gap-8 text-center md:grid-cols-3 md:gap-12">
-          {data.inteligencia.benchmark.map((item, idx) => (
-            <BenchmarkStat
-              key={idx}
-              label={item.label}
-              user={item.user}
-              market={item.market}
-              trend={item.trend}
-              trendColor={item.trend_color}
-              unit={item.unit || ""}
-              onClick={() =>
-                onOpenCardDetail({
-                  title: `Benchmark: ${item.label}`,
-                  description: "Comparativo entre escritorio e mercado.",
-                  lines: [`Seu escritorio: ${item.user}${item.unit || ""}`, `Mercado: ${item.market}${item.unit || ""}`, `Diferencial: ${item.trend}`],
-                  targetTab: "inteligencia",
-                })
-              }
-            />
-          ))}
+          {data.inteligencia.benchmark.map((item, idx) => {
+            const sampleSummary = formatBenchmarkSampleSummary({
+              sampleUser: item.sample_user,
+              sampleMarket: item.sample_market,
+              minUserObservations: item.min_user_observations,
+              minMarketObservations: item.min_market_observations,
+            });
+            const comparabilityLine = resolveBenchmarkComparabilityLine({
+              isComparable: item.is_comparable,
+              minUserObservations: item.min_user_observations,
+              minMarketObservations: item.min_market_observations,
+            });
+            const confidenceLine = formatBenchmarkConfidenceLine(item.confidence_label, item.confidence_level);
+
+            return (
+              <BenchmarkStat
+                key={idx}
+                label={item.label}
+                user={item.user}
+                market={item.market}
+                trend={item.trend}
+                trendColor={item.trend_color}
+                unit={item.unit || ""}
+                sampleUser={item.sample_user}
+                sampleMarket={item.sample_market}
+                minUserObservations={item.min_user_observations}
+                minMarketObservations={item.min_market_observations}
+                isComparable={item.is_comparable}
+                confidenceLevel={item.confidence_level}
+                confidenceLabel={item.confidence_label}
+                onClick={() =>
+                  onOpenCardDetail({
+                    title: `Benchmark: ${item.label}`,
+                    description: "Comparativo entre escritorio e mercado.",
+                    lines: [
+                      `Seu escritorio: ${item.user}${item.unit || ""}`,
+                      `Mercado: ${item.market}${item.unit || ""}`,
+                      `Diferencial: ${item.trend}`,
+                      ...(sampleSummary ? [sampleSummary] : []),
+                      ...(comparabilityLine ? [comparabilityLine] : []),
+                      ...(confidenceLine ? [confidenceLine] : []),
+                    ],
+                    targetTab: "inteligencia",
+                  })
+                }
+              />
+            );
+          })}
         </div>
       </section>
     </div>
@@ -3292,6 +3385,14 @@ function UploadHistoryView({
   onOpenCompleteAnalysis,
   onDeleteCase,
   isDeletingCaseId,
+  serverFilters,
+  onServerFiltersChange,
+  filterOptions,
+  currentPage,
+  pageSize,
+  totalCount,
+  totalPages,
+  onPageChange,
   onOpenRescisoriaCase,
 }: {
   items: UploadHistoryItem[];
@@ -3303,10 +3404,16 @@ function UploadHistoryView({
   onOpenCompleteAnalysis: (item: UploadHistoryItem) => void;
   onDeleteCase: (caseId: string) => void;
   isDeletingCaseId: string | null;
+  serverFilters: UploadHistoryQueryFilters;
+  onServerFiltersChange: (filters: UploadHistoryQueryFilters) => void;
+  filterOptions?: UploadHistoryFilterOptions;
+  currentPage: number;
+  pageSize: number;
+  totalCount: number;
+  totalPages: number;
+  onPageChange: (page: number) => void;
   onOpenRescisoriaCase: (caseId: string) => void;
 }) {
-  const [searchTerm, setSearchTerm] = useState("");
-  const [statusFilter, setStatusFilter] = useState<"all" | "in_flight" | "completed" | "failed">("all");
   const [expandedCaseIds, setExpandedCaseIds] = useState<string[]>([]);
   const [caseToDelete, setCaseToDelete] = useState<UploadHistoryItem | null>(null);
 
@@ -3318,30 +3425,17 @@ function UploadHistoryView({
     const completed = items.filter((item) => item.ai_status === "completed").length;
     const inFlight = items.filter((item) => isCaseAIInFlight(item.ai_status)).length;
     const requiresAttention = items.filter((item) => item.ai_status === "failed" || item.ai_status === "manual_review" || item.ai_status === "failed_retryable").length;
-    return { total: items.length, completed, inFlight, requiresAttention };
-  }, [items]);
+    return { total: totalCount, completed, inFlight, requiresAttention };
+  }, [items, totalCount]);
 
-  const filteredItems = useMemo(() => {
-    const normalizedSearch = normalizeSearchText(searchTerm.trim());
-    return items.filter((item) => {
-      if (statusFilter === "in_flight" && !isCaseAIInFlight(item.ai_status)) return false;
-      if (statusFilter === "completed" && item.ai_status !== "completed") return false;
-      if (statusFilter === "failed" && !(item.ai_status === "failed" || item.ai_status === "manual_review" || item.ai_status === "failed_retryable")) return false;
+  const filteredItems = items;
 
-      if (!normalizedSearch) return true;
-      const searchableBlob = [
-        item.filename || "",
-        item.process_number || "",
-        item.case_title || "",
-        item.tribunal || "",
-        item.judge || "",
-        item.action_type || "",
-      ].join(" ");
-      return normalizeSearchText(searchableBlob).includes(normalizedSearch);
-    });
-  }, [items, searchTerm, statusFilter]);
-
-  const hasFilters = searchTerm.trim().length > 0 || statusFilter !== "all";
+  const hasFilters =
+    serverFilters.search.trim().length > 0 ||
+    serverFilters.status_filter !== "all" ||
+    serverFilters.judge.trim().length > 0 ||
+    serverFilters.tribunal.trim().length > 0 ||
+    serverFilters.action_type.trim().length > 0;
 
   return (
     <div className="animate-in fade-in slide-in-from-bottom-4 duration-500 space-y-8">
@@ -3375,12 +3469,12 @@ function UploadHistoryView({
       </div>
 
       <div className={`${PANEL_SOFT_CLASS} p-4`}>
-        <div className="grid md:grid-cols-[minmax(0,1fr)_220px_auto] gap-3 items-end">
+        <div className="grid md:grid-cols-2 xl:grid-cols-[minmax(0,1fr)_220px_220px_220px_220px_auto] gap-3 items-end">
           <div>
             <label className="text-xs font-semibold text-slate-300 uppercase">Buscar no histórico</label>
             <input
-              value={searchTerm}
-              onChange={(event) => setSearchTerm(event.target.value)}
+              value={serverFilters.search}
+              onChange={(event) => onServerFiltersChange({ ...serverFilters, search: event.target.value })}
               placeholder="Arquivo, processo, tribunal, juiz..."
               className="mt-1 h-[38px] w-full px-3 border border-slate-700 rounded-md bg-slate-900/70 text-sm text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-cyan-500/40"
             />
@@ -3388,8 +3482,10 @@ function UploadHistoryView({
           <div>
             <label className="text-xs font-semibold text-slate-300 uppercase">Status IA</label>
             <select
-              value={statusFilter}
-              onChange={(event) => setStatusFilter(event.target.value as "all" | "in_flight" | "completed" | "failed")}
+              value={serverFilters.status_filter}
+              onChange={(event) =>
+                onServerFiltersChange({ ...serverFilters, status_filter: event.target.value as UploadHistoryQueryFilters["status_filter"] })
+              }
               className="mt-1 h-[38px] w-full px-3 border border-slate-700 rounded-md bg-slate-900/70 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-cyan-500/40"
             >
               <option value="all">Todos</option>
@@ -3398,20 +3494,94 @@ function UploadHistoryView({
               <option value="failed">Com falha/revisão</option>
             </select>
           </div>
+          <div>
+            <label className="text-xs font-semibold text-slate-300 uppercase">Tribunal</label>
+            <select
+              value={serverFilters.tribunal}
+              onChange={(event) => onServerFiltersChange({ ...serverFilters, tribunal: event.target.value })}
+              className="mt-1 h-[38px] w-full px-3 border border-slate-700 rounded-md bg-slate-900/70 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-cyan-500/40"
+            >
+              <option value="">Todos</option>
+              {(filterOptions?.tribunals ?? []).map((option) => (
+                <option key={option} value={option}>
+                  {option}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="text-xs font-semibold text-slate-300 uppercase">Juiz</label>
+            <select
+              value={serverFilters.judge}
+              onChange={(event) => onServerFiltersChange({ ...serverFilters, judge: event.target.value })}
+              className="mt-1 h-[38px] w-full px-3 border border-slate-700 rounded-md bg-slate-900/70 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-cyan-500/40"
+            >
+              <option value="">Todos</option>
+              {(filterOptions?.judges ?? []).map((option) => (
+                <option key={option} value={option}>
+                  {option}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="text-xs font-semibold text-slate-300 uppercase">Tipo da ação</label>
+            <select
+              value={serverFilters.action_type}
+              onChange={(event) => onServerFiltersChange({ ...serverFilters, action_type: event.target.value })}
+              className="mt-1 h-[38px] w-full px-3 border border-slate-700 rounded-md bg-slate-900/70 text-sm text-slate-100 focus:outline-none focus:ring-2 focus:ring-cyan-500/40"
+            >
+              <option value="">Todos</option>
+              {(filterOptions?.action_types ?? []).map((option) => (
+                <option key={option} value={option}>
+                  {option}
+                </option>
+              ))}
+            </select>
+          </div>
           <div className="md:justify-self-end">
             <Button
               type="button"
               variant="outline"
               className="h-[38px] border-slate-700 bg-slate-900/50 text-slate-100 hover:bg-slate-800"
               disabled={!hasFilters}
-              onClick={() => {
-                setSearchTerm("");
-                setStatusFilter("all");
-              }}
+              onClick={() => onServerFiltersChange(DEFAULT_UPLOAD_HISTORY_QUERY_FILTERS)}
             >
               Limpar filtros
             </Button>
           </div>
+        </div>
+      </div>
+
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <p className="text-xs text-slate-300">
+          Exibindo{" "}
+          {totalCount === 0 ? 0 : (currentPage - 1) * pageSize + 1}
+          -
+          {Math.min(currentPage * pageSize, totalCount)} de {totalCount}
+        </p>
+        <div className="flex items-center gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            className="h-8 border-slate-700 bg-slate-900/50 px-3 text-slate-100 hover:bg-slate-800"
+            disabled={isLoading || currentPage <= 1}
+            onClick={() => onPageChange(Math.max(1, currentPage - 1))}
+          >
+            Anterior
+          </Button>
+          <span className="text-xs text-slate-300">
+            Página {Math.max(currentPage, 1)} de {Math.max(totalPages, 1)}
+          </span>
+          <Button
+            type="button"
+            variant="outline"
+            className="h-8 border-slate-700 bg-slate-900/50 px-3 text-slate-100 hover:bg-slate-800"
+            disabled={isLoading || currentPage >= Math.max(totalPages, 1)}
+            onClick={() => onPageChange(Math.min(Math.max(totalPages, 1), currentPage + 1))}
+          >
+            Próxima
+          </Button>
         </div>
       </div>
 
@@ -3421,7 +3591,7 @@ function UploadHistoryView({
         <div className="rounded-xl border border-red-500/30 bg-red-950/30 px-4 py-5 text-sm text-red-200">Falha ao carregar histórico: {errorMessage}</div>
       ) : filteredItems.length === 0 ? (
         <div className={`${PANEL_SOFT_CLASS} p-6 text-sm text-slate-600 dark:text-slate-300`}>
-          {items.length === 0 ? "Nenhum upload registrado até o momento." : "Nenhum upload encontrado com os filtros aplicados."}
+          {hasFilters ? "Nenhum upload encontrado com os filtros aplicados." : "Nenhum upload registrado até o momento."}
         </div>
       ) : (
         <div className="space-y-4">
@@ -3847,16 +4017,27 @@ function UploadHistoryCompleteInsights({
           <div className="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900/60">
             <p className="text-[11px] font-bold uppercase tracking-wide text-slate-500 dark:text-slate-400">Benchmark vs Mercado</p>
             <div className="mt-3 space-y-2">
-              {data.inteligencia.benchmark.map((item, idx) => (
-                <div key={`${item.label}-${idx}`} className="rounded-lg border border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-900/70">
-                  <p className="text-xs font-bold text-slate-800 dark:text-slate-100">{item.label}</p>
-                  <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">
-                    Seu escritório: {item.user}
-                    {item.unit || ""} • Mercado: {item.market}
-                    {item.unit || ""} • Tendência: {item.trend}
-                  </p>
-                </div>
-              ))}
+              {data.inteligencia.benchmark.map((item, idx) => {
+                const sampleSummary = formatBenchmarkSampleSummary({
+                  sampleUser: item.sample_user,
+                  sampleMarket: item.sample_market,
+                  minUserObservations: item.min_user_observations,
+                  minMarketObservations: item.min_market_observations,
+                });
+                const confidenceLine = formatBenchmarkConfidenceLine(item.confidence_label, item.confidence_level);
+                return (
+                  <div key={`${item.label}-${idx}`} className="rounded-lg border border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-900/70">
+                    <p className="text-xs font-bold text-slate-800 dark:text-slate-100">{item.label}</p>
+                    <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">
+                      Seu escritório: {item.user}
+                      {item.unit || ""} • Mercado: {item.market}
+                      {item.unit || ""} • Tendência: {item.trend}
+                    </p>
+                    {sampleSummary ? <p className="mt-1 text-[11px] text-slate-500 dark:text-slate-400">{sampleSummary}</p> : null}
+                    {confidenceLine ? <p className="mt-1 text-[11px] text-slate-500 dark:text-slate-400">{confidenceLine}</p> : null}
+                  </div>
+                );
+              })}
             </div>
           </div>
         </div>
@@ -4337,13 +4518,92 @@ function formatBenchmarkMetricValue(value: unknown, unit: unknown): string {
   return attachWithoutSpace ? `${valueText}${unitText}` : `${valueText} ${unitText}`;
 }
 
-function BenchmarkStat({ label, user, market, trend, trendColor, unit = "", onClick }: any) {
+function formatBenchmarkSampleSummary({
+  sampleUser,
+  sampleMarket,
+  minUserObservations,
+  minMarketObservations,
+}: {
+  sampleUser?: number;
+  sampleMarket?: number;
+  minUserObservations?: number;
+  minMarketObservations?: number;
+}): string | null {
+  if (typeof sampleUser !== "number" && typeof sampleMarket !== "number") return null;
+  const userLabel =
+    typeof sampleUser === "number"
+      ? `${sampleUser}${typeof minUserObservations === "number" ? `/${minUserObservations}` : ""}`
+      : "N/D";
+  const marketLabel =
+    typeof sampleMarket === "number"
+      ? `${sampleMarket}${typeof minMarketObservations === "number" ? `/${minMarketObservations}` : ""}`
+      : "N/D";
+  return `Amostra (seu/mercado): ${userLabel} • ${marketLabel}`;
+}
+
+function resolveBenchmarkComparabilityLine({
+  isComparable,
+  minUserObservations,
+  minMarketObservations,
+}: {
+  isComparable?: boolean;
+  minUserObservations?: number;
+  minMarketObservations?: number;
+}): string | null {
+  if (isComparable !== false) return null;
+  if (typeof minUserObservations === "number" && typeof minMarketObservations === "number") {
+    return `Comparação liberada a partir de ${minUserObservations} observações do seu escritório e ${minMarketObservations} do mercado.`;
+  }
+  return "Comparação bloqueada por amostra insuficiente.";
+}
+
+function formatBenchmarkConfidenceLine(confidenceLabel?: string, confidenceLevel?: string): string | null {
+  const label = (confidenceLabel || "").trim();
+  if (label) return `Confiabilidade da comparação: ${label}`;
+  if (!confidenceLevel) return null;
+  if (confidenceLevel === "high") return "Confiabilidade da comparação: Alta";
+  if (confidenceLevel === "medium") return "Confiabilidade da comparação: Média";
+  if (confidenceLevel === "low") return "Confiabilidade da comparação: Baixa";
+  return null;
+}
+
+function benchmarkConfidenceTone(level?: string): string {
+  if (level === "high") return "border border-emerald-500/40 bg-emerald-500/15 text-emerald-200";
+  if (level === "medium") return "border border-amber-500/40 bg-amber-500/15 text-amber-200";
+  return "border border-slate-500/40 bg-slate-500/15 text-slate-200";
+}
+
+function BenchmarkStat({
+  label,
+  user,
+  market,
+  trend,
+  trendColor,
+  unit = "",
+  sampleUser,
+  sampleMarket,
+  minUserObservations,
+  minMarketObservations,
+  isComparable,
+  confidenceLevel,
+  confidenceLabel,
+  onClick,
+}: any) {
   const tone = trendTone(trendColor);
   const userValue = formatBenchmarkMetricValue(user, unit);
   const marketValue = formatBenchmarkMetricValue(market, unit);
-  const leadershipLabel = trendColor === "emerald" ? "Seu escritório à frente" : "Mercado à frente";
+  const sampleSummary = formatBenchmarkSampleSummary({ sampleUser, sampleMarket, minUserObservations, minMarketObservations });
+  const comparabilityLine = resolveBenchmarkComparabilityLine({ isComparable, minUserObservations, minMarketObservations });
+  const confidenceLine = formatBenchmarkConfidenceLine(confidenceLabel, confidenceLevel);
+  const confidenceTone = benchmarkConfidenceTone(confidenceLevel);
+  const leadershipLabel =
+    trendColor === "emerald"
+      ? "Seu escritório à frente"
+      : trendColor === "orange"
+        ? "Mercado à frente"
+        : "Comparação inconclusiva";
   return (
-    <button type="button" onClick={onClick} className="text-left md:text-center hover:opacity-95 transition-opacity">
+    <button type="button" onClick={onClick} className="cursor-pointer text-left transition-opacity hover:opacity-95 md:text-center">
       <p className="text-[10px] text-slate-300 font-bold uppercase tracking-widest mb-6">{label}</p>
       <div className="mb-4 flex flex-wrap items-center justify-center gap-4 sm:gap-8">
         <div>
@@ -4360,6 +4620,9 @@ function BenchmarkStat({ label, user, market, trend, trendColor, unit = "", onCl
         <TrendingUp size={12} /> {trend}
       </div>
       <p className="mt-2 text-[10px] font-semibold uppercase tracking-wide text-slate-300">{leadershipLabel}</p>
+      {sampleSummary ? <p className="mt-2 text-[10px] text-slate-400">{sampleSummary}</p> : null}
+      {comparabilityLine ? <p className="mt-1 text-[10px] text-cyan-300">{comparabilityLine}</p> : null}
+      {confidenceLine ? <p className={`mt-1 inline-flex rounded-full px-2 py-1 text-[10px] font-semibold ${confidenceTone}`}>{confidenceLine}</p> : null}
     </button>
   );
 }
@@ -4379,7 +4642,7 @@ function ScenarioCard({ id, title, tag, tagColor, data, footer, onClick, isFocus
       id={id}
       type="button"
       onClick={onClick}
-      className={`${PANEL_SOFT_CLASS} overflow-hidden flex flex-col h-full text-left hover:border-cyan-500/40 transition-colors ${
+      className={`${PANEL_SOFT_CLASS} flex h-full cursor-pointer flex-col overflow-hidden text-left transition-colors hover:border-cyan-500/40 ${
         isFocused ? "ring-2 ring-cyan-400/70 border-cyan-400/60 shadow-[0_0_0_1px_rgba(56,189,248,0.35)]" : ""
       }`}
     >
@@ -4458,7 +4721,7 @@ function AlertCountCard({ count, label, color, isActive = false, onClick }: any)
     <button
       type="button"
       onClick={onClick}
-      className={`${PANEL_SOFT_CLASS} w-full p-6 text-center transition-colors ${
+      className={`${PANEL_SOFT_CLASS} w-full cursor-pointer p-6 text-center transition-colors ${
         isActive ? "border-cyan-400/80 ring-2 ring-cyan-400/25" : "hover:border-cyan-500/40"
       }`}
     >
@@ -4708,7 +4971,7 @@ function MetricCard({
     <button
       type="button"
       onClick={onClick}
-      className={`${PANEL_SOFT_CLASS} w-full p-6 flex flex-col justify-between relative overflow-hidden h-full hover:border-cyan-500/40 transition-colors text-left`}
+      className={`${PANEL_SOFT_CLASS} relative flex h-full w-full cursor-pointer flex-col justify-between overflow-hidden p-6 text-left transition-colors hover:border-cyan-500/40`}
     >
       <div className={`absolute top-0 left-0 w-1 h-full ${tone.line}`}></div>
       <div className="mb-4">

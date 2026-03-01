@@ -685,14 +685,6 @@
   color: rgb(15 23 42);
 }
 
-.light .home-page footer .text-white {
-  color: rgb(241 245 249);
-}
-
-.light .home-page footer .text-slate-400 {
-  color: rgb(148 163 184);
-}
-
 .light .auth-page .text-blue-100\/80 {
   color: rgb(71 85 105);
   --tw-text-opacity: 1;

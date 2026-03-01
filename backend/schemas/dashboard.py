@@ -72,6 +72,13 @@ class BenchmarkData(BaseModel):
     trend: str
     trend_color: str
     unit: str = ""
+    sample_user: Optional[int] = None
+    sample_market: Optional[int] = None
+    min_user_observations: Optional[int] = None
+    min_market_observations: Optional[int] = None
+    is_comparable: Optional[bool] = None
+    confidence_level: Optional[str] = None
+    confidence_label: Optional[str] = None
 
 
 class ScenarioItemData(BaseModel):
