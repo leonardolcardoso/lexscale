@@ -2902,7 +2902,7 @@ function VisaoGeralView({
                 <BarChart data={data.visao_geral.weekly_activity}>
                   <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#1e293b" />
                   <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fontSize: 10, fill: "#94a3b8" }} />
-                  <Tooltip cursor={{ fill: "#0f172a" }} contentStyle={{ borderRadius: "8px", border: "1px solid #334155", background: "#0f172a", color: "#cbd5e1" }} />
+                  <Tooltip cursor={false} contentStyle={{ borderRadius: "8px", border: "1px solid #334155", background: "#0f172a", color: "#cbd5e1" }} />
                   <Bar dataKey="value" fill="#38bdf8" radius={[4, 4, 0, 0]} barSize={24} />
                 </BarChart>
               </ResponsiveContainer>
