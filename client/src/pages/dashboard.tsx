@@ -3616,7 +3616,7 @@ function UploadHistoryView({
               { label: "Formato", value: formatContentTypeLabel(item.content_type) },
               { label: "Nº do processo", value: extracted.process_number || item.process_number || "--" },
               { label: "Tribunal", value: extracted.tribunal || item.tribunal || "--" },
-              { label: "Autoridade Responsável", value: extracted.authority_display || extracted.judge || item.judge || "--" },
+              { label: "Autoridade Responsável", value: extracted.authority_display || extracted.judge || item.authority_display || item.judge || "--" },
               { label: "Tipo da ação", value: extracted.action_type || item.action_type || "--" },
               {
                 label: "Valor da causa",
@@ -3634,7 +3634,7 @@ function UploadHistoryView({
             ].filter((value) => typeof value === "number" && Number.isFinite(value)).length;
             const rescisoria = item.generated_data?.rescisoria;
             const isRescisoriaCandidate = typeof rescisoria?.viability_score === "number" && rescisoria.viability_score >= 70;
-            const authorityDisplay = item.generated_data?.extracted?.authority_display ?? null;
+            const authorityDisplay = item.generated_data?.extracted?.authority_display ?? item.authority_display ?? null;
             const favorabilitySummary = resolveFavorabilitySummary({
               favorableToUser: item.generated_data?.favorable_to_user_pct,
               favorableToCounterparty: item.generated_data?.favorable_to_counterparty_pct,

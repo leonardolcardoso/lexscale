@@ -176,6 +176,7 @@ export type UploadCaseResponse = {
     title?: string | null;
     tribunal?: string | null;
     judge?: string | null;
+    authority_display?: string | null;
     action_type?: string | null;
     claim_value?: number | null;
     status?: string | null;
@@ -211,6 +212,7 @@ export type UserCaseListItem = {
   process_number: string;
   tribunal?: string | null;
   judge?: string | null;
+  authority_display?: string | null;
   action_type?: string | null;
   claim_value?: number | null;
   status?: string | null;
@@ -283,6 +285,7 @@ export type UploadHistoryItem = {
   content_type?: string | null;
   tribunal?: string | null;
   judge?: string | null;
+  authority_display?: string | null;
   action_type?: string | null;
   claim_value?: number | null;
   status?: string | null;

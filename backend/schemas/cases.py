@@ -77,6 +77,7 @@ class CaseListItem(BaseModel):
     process_number: str
     tribunal: Optional[str] = None
     judge: Optional[str] = None
+    authority_display: Optional[str] = None
     action_type: Optional[str] = None
     claim_value: Optional[float] = None
     status: Optional[str] = None
@@ -133,6 +134,7 @@ class UploadHistoryItem(BaseModel):
     content_type: Optional[str] = None
     tribunal: Optional[str] = None
     judge: Optional[str] = None
+    authority_display: Optional[str] = None
     action_type: Optional[str] = None
     claim_value: Optional[float] = None
     status: Optional[str] = None

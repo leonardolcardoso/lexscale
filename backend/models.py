@@ -100,6 +100,7 @@ class ProcessCase(Base):
     title = Column(Text, nullable=True)
     tribunal = Column(Text, nullable=True, index=True)
     judge = Column(Text, nullable=True, index=True)
+    authority_display = Column(Text, nullable=True, index=True)
     action_type = Column(Text, nullable=True, index=True)
     claim_value = Column(Float, nullable=True, index=True)
     status = Column(Text, nullable=True, default="novo")

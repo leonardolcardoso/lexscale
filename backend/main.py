@@ -771,6 +771,7 @@ def _process_case_ai_enrichment(case_id: uuid_pkg.UUID) -> None:
         case.title = final_extraction.title or case.title
         case.tribunal = final_extraction.tribunal or case.tribunal
         case.judge = final_extraction.judge or case.judge
+        case.authority_display = final_extraction.authority_display or case.authority_display or final_extraction.judge
         case.action_type = final_extraction.action_type or case.action_type
         case.claim_value = final_extraction.claim_value or case.claim_value
         case.status = case.status or final_extraction.status or "em_andamento"
@@ -1237,6 +1238,7 @@ def list_cases(
             process_number=item.process_number,
             tribunal=item.tribunal,
             judge=item.judge,
+            authority_display=item.authority_display,
             action_type=item.action_type,
             claim_value=item.claim_value,
             status=item.status,
@@ -1371,12 +1373,17 @@ def list_upload_history(
 
     if search_norm:
         search_pattern = _as_like_pattern(search_norm)
+        extracted_authority = ProcessCase.extracted_fields.op("->>")("authority_display")
+        extracted_judge = ProcessCase.extracted_fields.op("->>")("judge")
         search_conditions = [
             _normalized_text_expr(ProcessDocument.filename).like(search_pattern, escape="\\"),
             _normalized_text_expr(ProcessCase.process_number).like(search_pattern, escape="\\"),
             _normalized_text_expr(ProcessCase.title).like(search_pattern, escape="\\"),
             _normalized_text_expr(ProcessCase.tribunal).like(search_pattern, escape="\\"),
             _normalized_text_expr(ProcessCase.judge).like(search_pattern, escape="\\"),
+            _normalized_text_expr(ProcessCase.authority_display).like(search_pattern, escape="\\"),
+            _normalized_text_expr(extracted_authority).like(search_pattern, escape="\\"),
+            _normalized_text_expr(extracted_judge).like(search_pattern, escape="\\"),
             _normalized_text_expr(ProcessCase.action_type).like(search_pattern, escape="\\"),
             _normalized_text_expr(ProcessCase.status).like(search_pattern, escape="\\"),
         ]
@@ -1409,6 +1416,8 @@ def list_upload_history(
     items: List[UploadHistoryItem] = []
     for case_item, document_item in rows:
         extracted_payload = _safe_case_extraction_payload(case_item.extracted_fields)
+        if case_item.authority_display and not extracted_payload.authority_display:
+            extracted_payload = extracted_payload.model_copy(update={"authority_display": case_item.authority_display})
         success_p = case_item.success_probability
         user_party_val = case_item.user_party
         favorable_user: Optional[float] = None
@@ -1431,6 +1440,7 @@ def list_upload_history(
                 content_type=document_item.content_type if document_item else None,
                 tribunal=case_item.tribunal,
                 judge=case_item.judge,
+                authority_display=case_item.authority_display,
                 action_type=case_item.action_type,
                 claim_value=case_item.claim_value,
                 status=case_item.status,
@@ -1655,6 +1665,7 @@ async def upload_case(
         title=extraction.title,
         tribunal=extraction.tribunal,
         judge=extraction.judge,
+        authority_display=extraction.authority_display or extraction.judge or judge_norm,
         action_type=extraction.action_type,
         claim_value=extraction.claim_value or claim_value,
         status=status_norm or extraction.status or "em_andamento",

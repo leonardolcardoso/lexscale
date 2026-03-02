@@ -101,6 +101,9 @@ def init_database() -> None:
                 text("ALTER TABLE IF EXISTS process_cases ADD COLUMN IF NOT EXISTS ai_processed_at TIMESTAMPTZ"),
             )
             connection.execute(
+                text("ALTER TABLE IF EXISTS process_cases ADD COLUMN IF NOT EXISTS authority_display TEXT"),
+            )
+            connection.execute(
                 text("ALTER TABLE IF EXISTS process_cases ADD COLUMN IF NOT EXISTS user_party TEXT"),
             )
             if allow_data_migrations:
@@ -116,6 +119,18 @@ def init_database() -> None:
                 connection.execute(
                     text("UPDATE process_cases SET ai_attempts = COALESCE(ai_attempts, 0)"),
                 )
+                connection.execute(
+                    text(
+                        "UPDATE process_cases "
+                        "SET authority_display = COALESCE("
+                        "NULLIF(trim(authority_display), ''), "
+                        "NULLIF(trim(extracted_fields->>'authority_display'), ''), "
+                        "NULLIF(trim(judge), '')"
+                        ") "
+                        "WHERE authority_display IS NULL "
+                        "OR trim(authority_display) = ''",
+                    ),
+                )
             connection.execute(
                 text("CREATE INDEX IF NOT EXISTS ix_process_cases_ai_status ON process_cases (ai_status)"),
             )
@@ -124,6 +139,9 @@ def init_database() -> None:
             )
             connection.execute(
                 text("CREATE INDEX IF NOT EXISTS ix_process_cases_ai_next_retry_at ON process_cases (ai_next_retry_at)"),
+            )
+            connection.execute(
+                text("CREATE INDEX IF NOT EXISTS ix_process_cases_authority_display ON process_cases (authority_display)"),
             )
             connection.execute(
                 text("ALTER TABLE IF EXISTS strategic_alerts ADD COLUMN IF NOT EXISTS action_target JSON"),
