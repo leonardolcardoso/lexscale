@@ -163,6 +163,14 @@ class DashboardFiltersData(BaseModel):
     periodo: str
 
 
+class DashboardFilterOptionsData(BaseModel):
+    tribunais: List[str] = Field(default_factory=list)
+    juizes: List[str] = Field(default_factory=list)
+    tipos_acao: List[str] = Field(default_factory=list)
+    faixas_valor: List[str] = Field(default_factory=list)
+    periodos: List[str] = Field(default_factory=list)
+
+
 class VisaoGeralData(BaseModel):
     stats: List[MetricCardData]
     scores: List[ScoreCardData]

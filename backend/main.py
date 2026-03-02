@@ -26,6 +26,7 @@ from backend.models import (
     CaseDeadline,
     ProcessCase,
     ProcessDocument,
+    PublicCaseRecord,
     PublicDataSource,
     StrategicAlert,
     User,
@@ -45,7 +46,7 @@ from backend.schemas.cases import (
     UploadHistoryListResponse,
     UploadCaseResponse,
 )
-from backend.schemas.dashboard import CaseContextData, DashboardData
+from backend.schemas.dashboard import CaseContextData, DashboardData, DashboardFilterOptionsData
 from backend.schemas.public_data import (
     PublicDataSourceCreate,
     PublicDataSourceItem,
@@ -117,6 +118,8 @@ _strategic_alert_scheduler_stop = threading.Event()
 _strategic_alert_scheduler_thread: Optional[threading.Thread] = None
 _ai_case_scheduler_stop = threading.Event()
 _ai_case_scheduler_thread: Optional[threading.Thread] = None
+DEFAULT_DASHBOARD_VALUE_RANGES = ["Todos os Valores", "0-100k", "100k-500k", ">500k"]
+DEFAULT_DASHBOARD_PERIODS = ["Últimos 3 meses", "Últimos 6 meses", "Últimos 12 meses"]
 
 AI_STATUS_QUEUED = "queued"
 AI_STATUS_PROCESSING = "processing"
@@ -324,6 +327,21 @@ def _as_like_pattern(value: str) -> str:
 
 def _normalize_search_text(value: str) -> str:
     return "".join(ch for ch in unicodedata.normalize("NFD", value) if unicodedata.category(ch) != "Mn").lower().strip()
+
+
+def _merge_filter_values(all_label: str, *groups: List[str]) -> List[str]:
+    deduped: Dict[str, str] = {}
+    for group in groups:
+        for raw in group:
+            normalized = _normalize_optional_text(raw)
+            if not normalized:
+                continue
+            dedupe_key = _normalize_search_text(normalized)
+            if not dedupe_key or dedupe_key in deduped:
+                continue
+            deduped[dedupe_key] = normalized
+    ordered = sorted(deduped.values(), key=_normalize_search_text)
+    return [all_label, *ordered]
 
 
 def _normalized_text_expr(column: Any):
@@ -1144,6 +1162,82 @@ def get_dashboard_data(
     )
     db.commit()
     return dashboard
+
+
+@app.get("/api/dashboard/filters", response_model=DashboardFilterOptionsData)
+def get_dashboard_filter_options(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> DashboardFilterOptionsData:
+    user_query = db.query(ProcessCase).filter(ProcessCase.user_id == current_user.id)
+
+    user_judges_rows = (
+        user_query.with_entities(ProcessCase.judge)
+        .filter(ProcessCase.judge.isnot(None), func.length(func.trim(ProcessCase.judge)) > 0)
+        .distinct()
+        .order_by(ProcessCase.judge.asc())
+        .all()
+    )
+    user_tribunals_rows = (
+        user_query.with_entities(ProcessCase.tribunal)
+        .filter(ProcessCase.tribunal.isnot(None), func.length(func.trim(ProcessCase.tribunal)) > 0)
+        .distinct()
+        .order_by(ProcessCase.tribunal.asc())
+        .all()
+    )
+    user_action_types_rows = (
+        user_query.with_entities(ProcessCase.action_type)
+        .filter(ProcessCase.action_type.isnot(None), func.length(func.trim(ProcessCase.action_type)) > 0)
+        .distinct()
+        .order_by(ProcessCase.action_type.asc())
+        .all()
+    )
+
+    public_judges_rows = (
+        db.query(PublicCaseRecord.judge)
+        .filter(PublicCaseRecord.judge.isnot(None), func.length(func.trim(PublicCaseRecord.judge)) > 0)
+        .distinct()
+        .order_by(PublicCaseRecord.judge.asc())
+        .all()
+    )
+    public_tribunals_rows = (
+        db.query(PublicCaseRecord.tribunal)
+        .filter(PublicCaseRecord.tribunal.isnot(None), func.length(func.trim(PublicCaseRecord.tribunal)) > 0)
+        .distinct()
+        .order_by(PublicCaseRecord.tribunal.asc())
+        .all()
+    )
+    public_action_types_rows = (
+        db.query(PublicCaseRecord.action_type)
+        .filter(PublicCaseRecord.action_type.isnot(None), func.length(func.trim(PublicCaseRecord.action_type)) > 0)
+        .distinct()
+        .order_by(PublicCaseRecord.action_type.asc())
+        .all()
+    )
+
+    tribunais = _merge_filter_values(
+        "Todos os Tribunais",
+        [row[0] for row in user_tribunals_rows if row and row[0]],
+        [row[0] for row in public_tribunals_rows if row and row[0]],
+    )
+    juizes = _merge_filter_values(
+        "Todos os Juízes",
+        [row[0] for row in user_judges_rows if row and row[0]],
+        [row[0] for row in public_judges_rows if row and row[0]],
+    )
+    tipos_acao = _merge_filter_values(
+        "Todos os Tipos",
+        [row[0] for row in user_action_types_rows if row and row[0]],
+        [row[0] for row in public_action_types_rows if row and row[0]],
+    )
+
+    return DashboardFilterOptionsData(
+        tribunais=tribunais,
+        juizes=juizes,
+        tipos_acao=tipos_acao,
+        faixas_valor=list(DEFAULT_DASHBOARD_VALUE_RANGES),
+        periodos=list(DEFAULT_DASHBOARD_PERIODS),
+    )
 
 
 @app.get("/api/strategic-alerts", response_model=StrategicAlertListResponse)

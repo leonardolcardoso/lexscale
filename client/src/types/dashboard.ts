@@ -316,6 +316,14 @@ export type UploadHistoryFilterOptions = {
   action_types: string[];
 };
 
+export type DashboardFilterOptions = {
+  tribunais: string[];
+  juizes: string[];
+  tipos_acao: string[];
+  faixas_valor: string[];
+  periodos: string[];
+};
+
 export type UploadHistoryListResponse = {
   items: UploadHistoryItem[];
   total_count: number;

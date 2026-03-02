@@ -39,6 +39,7 @@ import type {
   CaseAIStatusResponse,
   CaseExtractionPreviewResponse,
   DashboardData,
+  DashboardFilterOptions,
   DashboardFilters,
   UploadHistoryFilterOptions,
   UploadHistoryItem,
@@ -76,12 +77,12 @@ const DEFAULT_UPLOAD_HISTORY_QUERY_FILTERS: UploadHistoryQueryFilters = {
 };
 const UPLOAD_HISTORY_PAGE_SIZE = 20;
 
-const FILTER_OPTIONS = {
-  tribunal: ["Todos os Tribunais", "TJSP", "TJRJ", "TJDFT", "TRF5", "TRT2", "TRF3", "STJ"],
-  juiz: ["Todos os Juízes", "Dr. João Silva", "Dra. Maria Santos", "Dr. Pedro Oliveira"],
-  tipo_acao: ["Todos os Tipos", "Trabalhista", "Cível", "Tributário", "Comercial", "Família"],
-  faixa_valor: ["Todos os Valores", "0-100k", "100k-500k", ">500k"],
-  periodo: ["Últimos 3 meses", "Últimos 6 meses", "Últimos 12 meses"],
+const DEFAULT_DASHBOARD_FILTER_OPTIONS: DashboardFilterOptions = {
+  tribunais: ["Todos os Tribunais"],
+  juizes: ["Todos os Juízes"],
+  tipos_acao: ["Todos os Tipos"],
+  faixas_valor: ["Todos os Valores", "0-100k", "100k-500k", ">500k"],
+  periodos: ["Últimos 3 meses", "Últimos 6 meses", "Últimos 12 meses"],
 };
 
 const PANEL_CLASS = "rounded-2xl border border-slate-800/90 bg-slate-900/70 backdrop-blur-xl shadow-[0_18px_40px_rgba(2,6,23,0.45)]";
@@ -505,6 +506,18 @@ async function fetchDashboard(filters: DashboardFilters): Promise<DashboardData>
     return await parseJsonOrThrow<DashboardData>(res);
   } catch (error) {
     throw mapNetworkError(error, "Não foi possível carregar o dashboard agora. Tente novamente.");
+  }
+}
+
+async function fetchDashboardFilterOptions(): Promise<DashboardFilterOptions> {
+  try {
+    const res = await fetch("/api/dashboard/filters", { credentials: "include" });
+    if (res.status === 404) {
+      return DEFAULT_DASHBOARD_FILTER_OPTIONS;
+    }
+    return await parseJsonOrThrow<DashboardFilterOptions>(res);
+  } catch (error) {
+    throw mapNetworkError(error, "Não foi possível carregar os filtros do dashboard agora.");
   }
 }
 
@@ -993,10 +1006,12 @@ export default function Dashboard() {
 
   const refreshDashboardAndRelatedData = useCallback(() => {
     queryClient.invalidateQueries({ queryKey: ["dashboard-data"] });
+    queryClient.invalidateQueries({ queryKey: ["dashboard", "filters"] });
     queryClient.invalidateQueries({ queryKey: ["user-cases"] });
     queryClient.invalidateQueries({ queryKey: ["upload-history"] });
     queryClient.invalidateQueries({ queryKey: ["strategic-alerts"] });
     void queryClient.refetchQueries({ queryKey: ["dashboard-data"], type: "active" });
+    void queryClient.refetchQueries({ queryKey: ["dashboard", "filters"], type: "active" });
     void queryClient.refetchQueries({ queryKey: ["user-cases"], type: "active" });
     void queryClient.refetchQueries({ queryKey: ["upload-history"], type: "active" });
     void queryClient.refetchQueries({ queryKey: ["strategic-alerts"], type: "active" });
@@ -1063,6 +1078,13 @@ export default function Dashboard() {
     enabled: isDemoMode || meQuery.isSuccess,
     refetchInterval: isDemoMode ? false : isCasePollingBoosted ? 5000 : 15000,
     refetchIntervalInBackground: !isDemoMode,
+    retry: false,
+  });
+
+  const dashboardFilterOptionsQuery = useQuery({
+    queryKey: ["dashboard", "filters"],
+    queryFn: fetchDashboardFilterOptions,
+    enabled: meQuery.isSuccess,
     retry: false,
   });
 
@@ -1421,6 +1443,25 @@ export default function Dashboard() {
   const uploadHistoryTotalPages = isDemoMode
     ? 1
     : uploadHistoryQuery.data?.total_pages ?? Math.ceil(uploadHistoryTotalCount / UPLOAD_HISTORY_PAGE_SIZE);
+  const dashboardFilterOptions = useMemo<DashboardFilterOptions>(() => {
+    const source = dashboardFilterOptionsQuery.data ?? DEFAULT_DASHBOARD_FILTER_OPTIONS;
+    const ensureValue = (items: string[], current: string, fallback: string): string[] => {
+      const normalizedItems = Array.from(new Set(items.filter((item) => item && item.trim())));
+      const required = (current || fallback).trim();
+      if (required && !normalizedItems.includes(required)) {
+        return [required, ...normalizedItems];
+      }
+      return normalizedItems.length > 0 ? normalizedItems : [fallback];
+    };
+
+    return {
+      tribunais: ensureValue(source.tribunais, draftFilters.tribunal, "Todos os Tribunais"),
+      juizes: ensureValue(source.juizes, draftFilters.juiz, "Todos os Juízes"),
+      tipos_acao: ensureValue(source.tipos_acao, draftFilters.tipo_acao, "Todos os Tipos"),
+      faixas_valor: ensureValue(source.faixas_valor, draftFilters.faixa_valor, "Todos os Valores"),
+      periodos: ensureValue(source.periodos, draftFilters.periodo, "Últimos 6 meses"),
+    };
+  }, [dashboardFilterOptionsQuery.data, draftFilters.faixa_valor, draftFilters.juiz, draftFilters.periodo, draftFilters.tipo_acao, draftFilters.tribunal]);
 
   useEffect(() => {
     if (isDemoMode) return;
@@ -2294,31 +2335,31 @@ export default function Dashboard() {
           <FilterSelect
             label="Tribunal"
             value={draftFilters.tribunal}
-            options={FILTER_OPTIONS.tribunal}
+            options={dashboardFilterOptions.tribunais}
             onChange={(value) => setDraftFilters((prev) => ({ ...prev, tribunal: value }))}
           />
           <FilterSelect
             label="Juiz"
             value={draftFilters.juiz}
-            options={FILTER_OPTIONS.juiz}
+            options={dashboardFilterOptions.juizes}
             onChange={(value) => setDraftFilters((prev) => ({ ...prev, juiz: value }))}
           />
           <FilterSelect
             label="Tipo de Ação"
             value={draftFilters.tipo_acao}
-            options={FILTER_OPTIONS.tipo_acao}
+            options={dashboardFilterOptions.tipos_acao}
             onChange={(value) => setDraftFilters((prev) => ({ ...prev, tipo_acao: value }))}
           />
           <FilterSelect
             label="Faixa de Valor"
             value={draftFilters.faixa_valor}
-            options={FILTER_OPTIONS.faixa_valor}
+            options={dashboardFilterOptions.faixas_valor}
             onChange={(value) => setDraftFilters((prev) => ({ ...prev, faixa_valor: value }))}
           />
           <FilterSelect
             label="Período"
             value={draftFilters.periodo}
-            options={FILTER_OPTIONS.periodo}
+            options={dashboardFilterOptions.periodos}
             onChange={(value) => setDraftFilters((prev) => ({ ...prev, periodo: value }))}
           />
           <Button onClick={handleApplyFilters} className="h-[38px] w-full gap-2 bg-blue-600 px-6 text-white hover:bg-blue-500 xl:w-auto">
