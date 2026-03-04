@@ -13,6 +13,85 @@ import { fetchProfile, isUnauthorizedError, logout, updateProfile } from "@/lib/
 import { mapNetworkError, parseApiErrorResponse } from "@/lib/http-errors";
 import { SiteFooter } from "@/components/site-footer";
 
+type PublicDataOpsSourceItem = {
+  name: string;
+  enabled: boolean;
+  last_status?: string | null;
+  last_error?: string | null;
+  last_sync_at?: string | null;
+  minutes_since_last_sync?: number | null;
+  is_stale: boolean;
+};
+
+type PublicDataOpsResponse = {
+  generated_at: string;
+  cases: {
+    period_days: number;
+    uploads_total: number;
+    completed_total: number;
+    processing_total: number;
+    failed_total: number;
+    completed_rate_pct: number;
+    avg_total_processing_seconds?: number | null;
+    avg_total_processing_seconds_with_sync?: number | null;
+    avg_total_processing_seconds_without_sync?: number | null;
+  };
+  sync: {
+    sync_on_case_processing_enabled: boolean;
+    case_sync_min_freshness_minutes: number;
+    uploads_with_case_sync: number;
+    uploads_without_case_sync: number;
+    case_sync_execution_rate_pct: number;
+    avg_case_sync_elapsed_ms?: number | null;
+    p95_case_sync_elapsed_ms?: number | null;
+    sources_enabled_total: number;
+    sources_last_success: number;
+    sources_last_error: number;
+    sources_stale: number;
+  };
+  ai_usage: {
+    period_days: number;
+    total_calls: number;
+    total_tokens: number;
+    total_cost_usd: number;
+    chunk_summary_calls: number;
+    responses_calls: number;
+    embeddings_calls: number;
+  };
+  sources: PublicDataOpsSourceItem[];
+};
+
+function formatNumber(value?: number | null, fallback = "--"): string {
+  if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
+  return new Intl.NumberFormat("pt-BR").format(value);
+}
+
+function formatSeconds(value?: number | null): string {
+  if (typeof value !== "number" || !Number.isFinite(value)) return "--";
+  if (value < 60) return `${value.toFixed(1)}s`;
+  return `${(value / 60).toFixed(1)} min`;
+}
+
+function formatMilliseconds(value?: number | null): string {
+  if (typeof value !== "number" || !Number.isFinite(value)) return "--";
+  if (value < 1000) return `${Math.round(value)} ms`;
+  return `${(value / 1000).toFixed(2)} s`;
+}
+
+function formatPercent(value?: number | null): string {
+  if (typeof value !== "number" || !Number.isFinite(value)) return "--";
+  return `${value.toFixed(1)}%`;
+}
+
+function formatCurrencyUsd(value?: number | null): string {
+  if (typeof value !== "number" || !Number.isFinite(value)) return "--";
+  return new Intl.NumberFormat("pt-BR", {
+    style: "currency",
+    currency: "USD",
+    maximumFractionDigits: 4,
+  }).format(value);
+}
+
 export default function ProfilePage() {
   const [, setLocation] = useLocation();
   const { toast } = useToast();
@@ -35,6 +114,23 @@ export default function ProfilePage() {
     queryKey: ["profile"],
     queryFn: fetchProfile,
     retry: false,
+  });
+
+  const publicDataOpsQuery = useQuery({
+    queryKey: ["public-data-ops", 30],
+    queryFn: async () => {
+      try {
+        const res = await fetch("/api/public-data/ops?days=30", { credentials: "include" });
+        if (!res.ok) {
+          throw await parseApiErrorResponse(res);
+        }
+        return (await res.json()) as PublicDataOpsResponse;
+      } catch (error) {
+        throw mapNetworkError(error, "Não foi possível carregar métricas operacionais agora.");
+      }
+    },
+    retry: false,
+    refetchInterval: 60_000,
   });
 
   const updateMutation = useMutation({
@@ -143,6 +239,20 @@ export default function ProfilePage() {
     });
   }, [profileQuery.error, setLocation, toast]);
 
+  useEffect(() => {
+    if (!publicDataOpsQuery.error) {
+      return;
+    }
+    if (isUnauthorizedError(publicDataOpsQuery.error)) {
+      setLocation("/auth?tab=login", { replace: true });
+      return;
+    }
+    toast({
+      title: "Falha ao carregar observabilidade",
+      description: publicDataOpsQuery.error instanceof Error ? publicDataOpsQuery.error.message : "Erro desconhecido",
+    });
+  }, [publicDataOpsQuery.error, setLocation, toast]);
+
   if (profileQuery.isLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-slate-50 text-slate-700 dark:bg-slate-950 dark:text-slate-300">
@@ -157,6 +267,7 @@ export default function ProfilePage() {
   const sectionClass = "rounded-2xl border border-slate-200 bg-white/80 p-5 sm:p-6 dark:border-slate-700/60 dark:bg-slate-950/35";
   const labelClass = "block min-h-[1.25rem] text-xs font-semibold uppercase tracking-wide text-slate-600 dark:text-slate-300";
   const fieldGroupClass = "flex min-w-0 flex-col gap-2.5";
+  const ops = publicDataOpsQuery.data;
 
   return (
     <div className="profile-shell relative isolate flex min-h-screen flex-col overflow-hidden bg-[radial-gradient(circle_at_15%_10%,rgba(59,130,246,0.14),transparent_40%),radial-gradient(circle_at_85%_0%,rgba(20,184,166,0.1),transparent_35%),linear-gradient(180deg,#f8fbff_0%,#eef5ff_100%)] dark:bg-[radial-gradient(circle_at_15%_10%,rgba(59,130,246,0.28),transparent_40%),radial-gradient(circle_at_85%_0%,rgba(20,184,166,0.2),transparent_35%),linear-gradient(180deg,#050b1d_0%,#040916_100%)]">
@@ -335,6 +446,90 @@ export default function ProfilePage() {
                   {sourceMutation.isPending ? "Salvando..." : "Salvar Fonte"}
                 </Button>
               </div>
+            </section>
+
+            <section className={sectionClass}>
+              <div className="mb-4 flex items-start gap-3">
+                <div className="mt-0.5 rounded-xl border border-emerald-300 bg-emerald-50 p-2 dark:border-emerald-400/35 dark:bg-emerald-500/10">
+                  <Bot className="h-4 w-4 text-emerald-700 dark:text-emerald-200" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-semibold tracking-wide text-slate-800 dark:text-slate-100">Observabilidade IA + APIs externas</h3>
+                  <p className="text-xs leading-relaxed text-slate-500 dark:text-slate-400">Métricas de execução real dos uploads, sincronização externa e consumo da IA.</p>
+                </div>
+              </div>
+
+              {publicDataOpsQuery.isLoading ? (
+                <p className="text-xs text-slate-500 dark:text-slate-400">Carregando métricas operacionais...</p>
+              ) : ops ? (
+                <div className="space-y-4">
+                  <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                    <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 dark:border-slate-700/60 dark:bg-slate-900/45">
+                      <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">Uploads (30d)</p>
+                      <p className="mt-1 text-lg font-semibold text-slate-900 dark:text-slate-100">{formatNumber(ops.cases.uploads_total)}</p>
+                      <p className="text-xs text-slate-500 dark:text-slate-400">Concluídos: {formatPercent(ops.cases.completed_rate_pct)}</p>
+                    </div>
+                    <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 dark:border-slate-700/60 dark:bg-slate-900/45">
+                      <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">Tempo médio total</p>
+                      <p className="mt-1 text-lg font-semibold text-slate-900 dark:text-slate-100">{formatSeconds(ops.cases.avg_total_processing_seconds)}</p>
+                      <p className="text-xs text-slate-500 dark:text-slate-400">Com sync: {formatSeconds(ops.cases.avg_total_processing_seconds_with_sync)}</p>
+                    </div>
+                    <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 dark:border-slate-700/60 dark:bg-slate-900/45">
+                      <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">Sync por upload</p>
+                      <p className="mt-1 text-lg font-semibold text-slate-900 dark:text-slate-100">{formatPercent(ops.sync.case_sync_execution_rate_pct)}</p>
+                      <p className="text-xs text-slate-500 dark:text-slate-400">p95: {formatMilliseconds(ops.sync.p95_case_sync_elapsed_ms)}</p>
+                    </div>
+                    <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 dark:border-slate-700/60 dark:bg-slate-900/45">
+                      <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-500 dark:text-slate-400">Uso de IA (30d)</p>
+                      <p className="mt-1 text-lg font-semibold text-slate-900 dark:text-slate-100">{formatNumber(ops.ai_usage.total_calls)} chamadas</p>
+                      <p className="text-xs text-slate-500 dark:text-slate-400">{formatNumber(ops.ai_usage.total_tokens)} tokens • {formatCurrencyUsd(ops.ai_usage.total_cost_usd)}</p>
+                    </div>
+                  </div>
+
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 dark:border-slate-700/60 dark:bg-slate-900/45">
+                      <p className="text-xs font-semibold text-slate-700 dark:text-slate-200">Saúde das fontes</p>
+                      <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">
+                        Ativas: {formatNumber(ops.sync.sources_enabled_total)} • Último sucesso: {formatNumber(ops.sync.sources_last_success)} • Com erro: {formatNumber(ops.sync.sources_last_error)} • Stale: {formatNumber(ops.sync.sources_stale)}
+                      </p>
+                      <p className="mt-1 text-[11px] text-slate-500 dark:text-slate-400">
+                        Sync no upload: {ops.sync.sync_on_case_processing_enabled ? "habilitado" : "desabilitado"} (freshness mínima: {formatNumber(ops.sync.case_sync_min_freshness_minutes, "0")} min)
+                      </p>
+                    </div>
+                    <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 dark:border-slate-700/60 dark:bg-slate-900/45">
+                      <p className="text-xs font-semibold text-slate-700 dark:text-slate-200">Distribuição de chamadas IA</p>
+                      <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">
+                        Respostas: {formatNumber(ops.ai_usage.responses_calls)} • Embeddings: {formatNumber(ops.ai_usage.embeddings_calls)} • Chunk summary: {formatNumber(ops.ai_usage.chunk_summary_calls)}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 dark:border-slate-700/60 dark:bg-slate-900/45">
+                    <p className="mb-2 text-xs font-semibold text-slate-700 dark:text-slate-200">Status por fonte</p>
+                    <div className="space-y-2">
+                      {ops.sources.length === 0 ? (
+                        <p className="text-xs text-slate-500 dark:text-slate-400">Nenhuma fonte cadastrada.</p>
+                      ) : (
+                        ops.sources.slice(0, 8).map((source) => (
+                          <div key={source.name} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs dark:border-slate-700 dark:bg-slate-950/35">
+                            <div className="min-w-0">
+                              <p className="truncate font-medium text-slate-800 dark:text-slate-100">{source.name}</p>
+                              <p className="truncate text-slate-500 dark:text-slate-400">
+                                {source.enabled ? "Ativa" : "Inativa"} • Último status: {source.last_status || "n/a"} • Último sync: {source.minutes_since_last_sync != null ? `${formatNumber(source.minutes_since_last_sync)} min atrás` : "nunca"}
+                              </p>
+                            </div>
+                            <span className={`rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${source.is_stale ? "border-amber-300 bg-amber-50 text-amber-700 dark:border-amber-400/40 dark:bg-amber-500/10 dark:text-amber-200" : "border-emerald-300 bg-emerald-50 text-emerald-700 dark:border-emerald-400/40 dark:bg-emerald-500/10 dark:text-emerald-200"}`}>
+                              {source.is_stale ? "Stale" : "OK"}
+                            </span>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <p className="text-xs text-slate-500 dark:text-slate-400">Métricas operacionais indisponíveis no momento.</p>
+              )}
             </section>
           </CardContent>
         </Card>

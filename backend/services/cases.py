@@ -3,6 +3,7 @@ import logging
 import os
 import re
 import uuid
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -642,12 +643,23 @@ def analyze_case_with_ai(
     user_id: Optional[UUID] = None,
     usage_operation: str = "cases.analyze_case_with_ai.responses",
     user_party: Optional[str] = None,
+    public_context: Optional[Dict[str, Any]] = None,
 ) -> Tuple[CaseExtractionPayload, CaseScoresPayload]:
-    truncated = text[:18000] if text else ""
-    model = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
+    model = os.getenv("OPENAI_CASE_ANALYSIS_MODEL", "").strip() or os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
+    temperature = _safe_float(os.getenv("CASE_AI_TEMPERATURE", "0"), 0.0)
+    temperature = max(0.0, min(1.2, temperature))
+    max_output_tokens = max(1200, int(_safe_float(os.getenv("CASE_AI_MAX_OUTPUT_TOKENS", "2200"), 2200)))
+    document_context = _build_document_context_with_ai(
+        client=client,
+        model=model,
+        text=text,
+        db=db,
+        user_id=user_id,
+        usage_operation=usage_operation,
+    )
     system_prompt = (
-        "Você é um analista jurídico no Brasil. "
-        "Extraia dados estruturados e retorne APENAS JSON válido."
+        "Você é um analista jurídico no Brasil com foco em precisão factual. "
+        "Extraia dados estruturados, compare com contexto externo quando fornecido e retorne APENAS JSON válido."
     )
     perspective_instruction = ""
     if user_party in ("author", "defendant"):
@@ -657,6 +669,23 @@ def analyze_case_with_ai(
             "O campo 'success_probability' deve ser a probabilidade de vitória do AUTOR da ação (0 a 1). "
             f"No campo 'ai_summary', quando falar de êxito ou resultado, deixe explícito se o cenário é favorável ao usuário (que é {side}) ou à contraparte."
         )
+    public_context_records = []
+    public_context_summary: Dict[str, Any] = {}
+    if isinstance(public_context, dict):
+        maybe_records = public_context.get("records")
+        if isinstance(maybe_records, list):
+            public_context_records = [item for item in maybe_records if isinstance(item, dict)][:10]
+        maybe_summary = public_context.get("summary")
+        if isinstance(maybe_summary, dict):
+            public_context_summary = maybe_summary
+    public_context_block = ""
+    if public_context_records or public_context_summary:
+        public_context_block = (
+            "\n\nContexto externo sincronizado (bases públicas já carregadas no sistema):\n"
+            f"Resumo: {json.dumps(public_context_summary, ensure_ascii=False)}\n"
+            f"Amostra de registros: {json.dumps(public_context_records, ensure_ascii=False)}\n"
+            "Regra: use esse contexto para benchmark e comparação probabilística, sem afirmar certeza absoluta."
+        )
     user_prompt = (
         "Analise o documento judicial abaixo e responda com JSON no formato:\n"
         "{\n"
@@ -664,7 +693,7 @@ def analyze_case_with_ai(
         '    "process_number": "...", "title": "...", "tribunal": "...", "judge": "...",\n'
         '    "action_type": "...", "claim_value": 0,\n'
         '    "status": "...", "parties": {"author": "...", "defendant": "..."},\n'
-        '    "key_facts": ["..."], "deadlines": [{"label":"...", "due_date":"YYYY-MM-DD", "severity":"baixa|media|alta"}]\n'
+        '    "key_facts": ["..."], "deadlines": [{"label":"...", "due_date":"YYYY-MM-DD", "severity":"baixa|media|alta"}], "authority_display":"..."\n'
         "  },\n"
         '  "scores": {\n'
         '    "success_probability": 0.0,\n'
@@ -687,8 +716,10 @@ def analyze_case_with_ai(
         "Desembargador Federal, Ministro (STF/STJ/TST). Assinaturas: 'Assinado por', 'Assinado eletronicamente por', 'À disposição', 'Dado e passado'. "
         "Abreviações: Min.=Ministro, Des.=Desembargador, Rel.=Relator, Rev.=Revisor.\n\n"
         f"Contexto do upload: arquivo={filename}, process_number={process_number}, tribunal={tribunal}, juiz={judge}, tipo_acao={action_type}, claim_value={claim_value}\n\n"
-        "Documento:\n"
-        f"{truncated}"
+        f"Contexto de cobertura do documento: mode={document_context.mode}, blocos={document_context.chunk_count}\n"
+        + public_context_block
+        + "\n\nDocumento/Mapa consolidado:\n"
+        + document_context.text
     )
 
     response = client.responses.create(
@@ -697,8 +728,8 @@ def analyze_case_with_ai(
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ],
-        temperature=0.1,
-        max_output_tokens=1400,
+        temperature=temperature,
+        max_output_tokens=max_output_tokens,
     )
     record_openai_usage(
         db=db,
@@ -732,26 +763,62 @@ def analyze_case_with_ai(
             ),
         )
 
+    raw_claim = extraction_payload.get("claim_value")
+    claim_value_final = claim_value
+    if raw_claim is not None:
+        parsed_claim = _safe_float(raw_claim, -1.0)
+        if parsed_claim > 0:
+            claim_value_final = parsed_claim
+
     extraction = CaseExtractionPayload(
         process_number=extraction_payload.get("process_number") or process_number,
         title=extraction_payload.get("title"),
         tribunal=extraction_payload.get("tribunal") or tribunal,
         judge=extraction_payload.get("judge") or judge,
         action_type=extraction_payload.get("action_type") or action_type,
-        claim_value=extraction_payload.get("claim_value") or claim_value,
+        claim_value=claim_value_final,
         status=extraction_payload.get("status"),
         parties=extraction_payload.get("parties") or {},
         key_facts=extraction_payload.get("key_facts") or [],
         deadlines=deadlines,
+        authority_display=extraction_payload.get("authority_display"),
     )
 
+    success_probability = _safe_float(scores_payload.get("success_probability"), 0.68)
+    settlement_probability = _safe_float(scores_payload.get("settlement_probability"), 0.52)
+    expected_decision_months = _safe_float(scores_payload.get("expected_decision_months"), 6.0)
+    risk_score = _safe_float(scores_payload.get("risk_score"), 45.0)
+    complexity_score = _safe_float(scores_payload.get("complexity_score"), 50.0)
+
+    if success_probability > 1:
+        success_probability /= 100.0
+    if settlement_probability > 1:
+        settlement_probability /= 100.0
+    success_probability = max(0.0, min(1.0, success_probability))
+    settlement_probability = max(0.0, min(1.0, settlement_probability))
+    expected_decision_months = max(0.0, expected_decision_months)
+    if 0.0 <= risk_score <= 1.0:
+        risk_score *= 100.0
+    if 0.0 <= complexity_score <= 1.0:
+        complexity_score *= 100.0
+    risk_score = max(0.0, min(100.0, risk_score))
+    complexity_score = max(0.0, min(100.0, complexity_score))
+    ai_summary = str(scores_payload.get("ai_summary") or "").strip()
+    if not ai_summary:
+        ai_summary = (
+            f"Análise consolidada em {document_context.chunk_count} bloco(s): "
+            f"êxito do autor em {round(success_probability * 100)}%, "
+            f"acordo em {round(settlement_probability * 100)}%, "
+            f"tempo estimado de {expected_decision_months:.1f} meses."
+        )
+
     scores = CaseScoresPayload(
-        success_probability=float(scores_payload.get("success_probability", 0.72)),
-        settlement_probability=float(scores_payload.get("settlement_probability", 0.58)),
-        expected_decision_months=float(scores_payload.get("expected_decision_months", 4.2)),
-        risk_score=float(scores_payload.get("risk_score", 45)),
-        complexity_score=float(scores_payload.get("complexity_score", 50)),
-        ai_summary=str(scores_payload.get("ai_summary") or ""),
+        success_probability=round(success_probability, 4),
+        settlement_probability=round(settlement_probability, 4),
+        expected_decision_months=round(expected_decision_months, 2),
+        risk_score=round(risk_score, 2),
+        complexity_score=round(complexity_score, 2),
+        ai_summary=ai_summary[:4000],
     )
     return extraction, scores
 
@@ -788,3 +855,134 @@ def resolve_process_number(preferred: Optional[str], extracted: Optional[str]) -
         return extracted
     now = datetime.utcnow().strftime("%Y%m%d%H%M%S")
     return f"TEMP-{now}-{uuid.uuid4().hex[:6]}"
+
+
+def _is_truthy(value: str) -> bool:
+    return (value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _safe_float(value: Any, default: float) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return default
+    if parsed != parsed:  # NaN
+        return default
+    if parsed in {float("inf"), float("-inf")}:
+        return default
+    return parsed
+
+
+def _chunk_text(text: str, chunk_size: int, overlap: int, max_chunks: int) -> List[str]:
+    if not text or not text.strip():
+        return []
+
+    size = max(4000, int(chunk_size))
+    overlap_safe = max(0, min(int(overlap), size // 3))
+    step = max(1200, size - overlap_safe)
+    chunks: List[str] = []
+    cursor = 0
+
+    while cursor < len(text) and len(chunks) < max(1, int(max_chunks)):
+        end = min(len(text), cursor + size)
+        chunk = text[cursor:end].strip()
+        if chunk:
+            chunks.append(chunk)
+        if end >= len(text):
+            break
+        cursor += step
+
+    return chunks
+
+
+@dataclass
+class _DocumentContext:
+    text: str
+    chunk_count: int
+    mode: str
+
+
+def _build_document_context_with_ai(
+    client: OpenAI,
+    model: str,
+    text: str,
+    db: Optional[Session],
+    user_id: Optional[UUID],
+    usage_operation: str,
+) -> _DocumentContext:
+    chunk_size = int(os.getenv("CASE_AI_CHUNK_SIZE", "14000"))
+    chunk_overlap = int(os.getenv("CASE_AI_CHUNK_OVERLAP", "1200"))
+    max_chunks = int(os.getenv("CASE_AI_MAX_CHUNKS", "8"))
+    full_document_enabled = _is_truthy(os.getenv("CASE_AI_FULL_DOCUMENT_ENABLED", "1"))
+
+    if not text:
+        return _DocumentContext(text="", chunk_count=0, mode="empty")
+
+    chunks = _chunk_text(text=text, chunk_size=chunk_size, overlap=chunk_overlap, max_chunks=max_chunks)
+    if not full_document_enabled or len(chunks) <= 1:
+        return _DocumentContext(text=text[:18000], chunk_count=max(1, len(chunks)), mode="single_pass")
+
+    summary_model = os.getenv("OPENAI_CASE_SUMMARY_MODEL", "").strip() or model
+    summaries: List[str] = []
+    for idx, chunk in enumerate(chunks, start=1):
+        try:
+            chunk_prompt = (
+                "Você está mapeando um processo judicial grande em blocos. "
+                "Resuma este bloco em JSON no formato:\n"
+                '{'
+                '"key_facts": ["..."], '
+                '"deadlines": ["..."], '
+                '"authorities": ["..."], '
+                '"amounts": ["..."], '
+                '"signals": ["..."]'
+                "}\n"
+                "Regras: máximo 8 itens por lista; linguagem objetiva; sem inventar dados.\n\n"
+                f"Bloco {idx}/{len(chunks)}:\n{chunk}"
+            )
+            response = client.responses.create(
+                model=summary_model,
+                input=[
+                    {"role": "system", "content": "Você resume blocos de documentos jurídicos para análise forense."},
+                    {"role": "user", "content": chunk_prompt},
+                ],
+                temperature=0.0,
+                max_output_tokens=420,
+            )
+            record_openai_usage(
+                db=db,
+                logger=logger,
+                operation=f"{usage_operation}.chunk_summary",
+                model=summary_model,
+                usage=getattr(response, "usage", None),
+                user_id=user_id,
+                context={"feature": "case_enrichment_chunk_summary", "chunk_index": idx, "chunk_total": len(chunks)},
+            )
+            summary_text = (_extract_response_text(response) or "").strip()
+        except Exception:
+            summary_text = ""
+        if not summary_text:
+            local_facts = _extract_key_facts(chunk[:8000])
+            summary_text = json.dumps(
+                {
+                    "key_facts": local_facts,
+                    "deadlines": [deadline.label for deadline in _extract_deadlines_heuristic(chunk[:8000])],
+                    "authorities": [],
+                    "amounts": re.findall(MONEY_REGEX, chunk[:8000])[:5],
+                    "signals": ["fallback_local_summary"],
+                },
+                ensure_ascii=False,
+            )
+        summaries.append(f"[bloco {idx}/{len(chunks)}]\n{summary_text[:1800]}")
+
+    head = text[:3500].strip()
+    tail = text[-3500:].strip() if len(text) > 7000 else ""
+    assembled = (
+        "MAPA CONSOLIDADO DO DOCUMENTO (cobertura por blocos):\n"
+        + "\n\n".join(summaries)
+        + "\n\nTRECHO INICIAL DO DOCUMENTO:\n"
+        + head
+    )
+    if tail:
+        assembled += "\n\nTRECHO FINAL DO DOCUMENTO:\n" + tail
+
+    return _DocumentContext(text=assembled[:120000], chunk_count=len(chunks), mode="map_reduce")

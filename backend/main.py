@@ -48,6 +48,11 @@ from backend.schemas.cases import (
 )
 from backend.schemas.dashboard import CaseContextData, DashboardData, DashboardFilterOptionsData
 from backend.schemas.public_data import (
+    PublicDataOpsAIUsage,
+    PublicDataOpsCases,
+    PublicDataOpsResponse,
+    PublicDataOpsSourceItem,
+    PublicDataOpsSyncMetrics,
     PublicDataSourceCreate,
     PublicDataSourceItem,
     PublicDataSyncResponse,
@@ -72,6 +77,7 @@ from backend.services.cases import (
     analyze_case_with_ai,
     build_case_embedding,
     extract_text_from_document,
+    fallback_case_scores,
     fallback_extract_case_data,
     resolve_process_number,
     save_upload_bytes,
@@ -118,6 +124,9 @@ _strategic_alert_scheduler_stop = threading.Event()
 _strategic_alert_scheduler_thread: Optional[threading.Thread] = None
 _ai_case_scheduler_stop = threading.Event()
 _ai_case_scheduler_thread: Optional[threading.Thread] = None
+_public_data_scheduler_stop = threading.Event()
+_public_data_scheduler_thread: Optional[threading.Thread] = None
+_public_data_case_sync_lock = threading.Lock()
 DEFAULT_DASHBOARD_VALUE_RANGES = ["Todos os Valores", "0-100k", "100k-500k", ">500k"]
 DEFAULT_DASHBOARD_PERIODS = ["Últimos 3 meses", "Últimos 6 meses", "Últimos 12 meses"]
 
@@ -135,6 +144,24 @@ AI_STAGE_COMPLETED = "completed"
 AI_STAGE_FAILED = "failed"
 AI_PROCESSING_POLL_SECONDS = max(5, int(os.getenv("AI_PROCESSING_POLL_SECONDS", "5")))
 AI_MAX_RETRY_ATTEMPTS = max(1, int(os.getenv("AI_MAX_RETRY_ATTEMPTS", "5")))
+CASE_AI_MIN_TEXT_CHARS = max(80, int(os.getenv("CASE_AI_MIN_TEXT_CHARS", "300")))
+PUBLIC_DATA_SYNC_INTERVAL_MINUTES = max(5, int(os.getenv("PUBLIC_DATA_SYNC_INTERVAL_MINUTES", "60")))
+PUBLIC_DATA_SYNC_RUN_ON_STARTUP = os.getenv("PUBLIC_DATA_SYNC_RUN_ON_STARTUP", "true").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+PUBLIC_DATA_SYNC_ON_CASE_PROCESSING = os.getenv("PUBLIC_DATA_SYNC_ON_CASE_PROCESSING", "true").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+PUBLIC_DATA_SYNC_CASE_MIN_FRESHNESS_MINUTES = max(
+    0,
+    int(os.getenv("PUBLIC_DATA_SYNC_CASE_MIN_FRESHNESS_MINUTES", "0")),
+)
 
 
 class ChatRequest(BaseModel):
@@ -282,6 +309,182 @@ def _stop_strategic_alert_scheduler() -> None:
     if _strategic_alert_scheduler_thread and _strategic_alert_scheduler_thread.is_alive():
         _strategic_alert_scheduler_thread.join(timeout=5)
     _strategic_alert_scheduler_thread = None
+
+
+def _run_public_data_scheduler() -> None:
+    interval_seconds = max(60, PUBLIC_DATA_SYNC_INTERVAL_MINUTES * 60)
+    run_first_cycle = PUBLIC_DATA_SYNC_RUN_ON_STARTUP
+
+    while not _public_data_scheduler_stop.is_set():
+        if not run_first_cycle:
+            _public_data_scheduler_stop.wait(interval_seconds)
+            run_first_cycle = True
+            if _public_data_scheduler_stop.is_set():
+                break
+
+        started_at = datetime.now(timezone.utc)
+        try:
+            with SessionLocal() as db:
+                results = sync_enabled_sources(db)
+            success_count = sum(1 for item in results if not item.errors)
+            error_count = sum(1 for item in results if item.errors)
+            logger.info(
+                "Public data sync scheduler cycle finished: sources=%s success=%s error=%s",
+                len(results),
+                success_count,
+                error_count,
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("Public data sync scheduler cycle failed.")
+
+        elapsed = max(0.0, (datetime.now(timezone.utc) - started_at).total_seconds())
+        wait_seconds = max(5.0, interval_seconds - elapsed)
+        _public_data_scheduler_stop.wait(wait_seconds)
+
+
+def _start_public_data_scheduler() -> None:
+    global _public_data_scheduler_thread
+    if _public_data_scheduler_thread and _public_data_scheduler_thread.is_alive():
+        return
+    _public_data_scheduler_stop.clear()
+    _public_data_scheduler_thread = threading.Thread(
+        target=_run_public_data_scheduler,
+        name="public-data-scheduler",
+        daemon=True,
+    )
+    _public_data_scheduler_thread.start()
+    logger.info(
+        "Public data scheduler started (interval=%s min, run_on_startup=%s).",
+        PUBLIC_DATA_SYNC_INTERVAL_MINUTES,
+        PUBLIC_DATA_SYNC_RUN_ON_STARTUP,
+    )
+
+
+def _stop_public_data_scheduler() -> None:
+    global _public_data_scheduler_thread
+    _public_data_scheduler_stop.set()
+    if _public_data_scheduler_thread and _public_data_scheduler_thread.is_alive():
+        _public_data_scheduler_thread.join(timeout=5)
+    _public_data_scheduler_thread = None
+
+
+def _public_source_is_stale(
+    source: PublicDataSource,
+    *,
+    now: datetime,
+    min_freshness_minutes: int,
+) -> bool:
+    last_sync = _as_utc(source.last_sync_at)
+    if last_sync is None:
+        return True
+    if (source.last_status or "").strip().lower() != "success":
+        return True
+    if min_freshness_minutes <= 0:
+        return True
+    return last_sync <= (now - timedelta(minutes=min_freshness_minutes))
+
+
+def _public_source_is_stale_for_ops(
+    source: PublicDataSource,
+    *,
+    now: datetime,
+    stale_after_minutes: int,
+) -> bool:
+    last_sync = _as_utc(source.last_sync_at)
+    if last_sync is None:
+        return True
+    if (source.last_status or "").strip().lower() != "success":
+        return True
+    freshness_minutes = max(1, stale_after_minutes)
+    return last_sync <= (now - timedelta(minutes=freshness_minutes))
+
+
+def _to_non_negative_float(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    if numeric < 0:
+        return None
+    return numeric
+
+
+def _to_non_negative_int(value: Any) -> Optional[int]:
+    if value is None:
+        return None
+    try:
+        numeric = int(float(value))
+    except (TypeError, ValueError):
+        return None
+    if numeric < 0:
+        return None
+    return numeric
+
+
+def _percentile_from_sorted(values: List[float], percentile: float) -> Optional[float]:
+    if not values:
+        return None
+    if len(values) == 1:
+        return float(values[0])
+    pct = max(0.0, min(100.0, float(percentile)))
+    index = int(round((pct / 100.0) * (len(values) - 1)))
+    return float(values[index])
+
+
+def _sync_public_data_before_case_analysis(db: Session, case_id: uuid_pkg.UUID) -> Dict[str, Any]:
+    if not PUBLIC_DATA_SYNC_ON_CASE_PROCESSING:
+        return {"executed": False, "reason": "disabled"}
+
+    now = datetime.now(timezone.utc)
+    enabled_sources = db.query(PublicDataSource).filter(PublicDataSource.enabled.is_(True)).all()
+    if not enabled_sources:
+        return {"executed": False, "reason": "no_enabled_sources"}
+
+    if not any(
+        _public_source_is_stale(
+            source,
+            now=now,
+            min_freshness_minutes=PUBLIC_DATA_SYNC_CASE_MIN_FRESHNESS_MINUTES,
+        )
+        for source in enabled_sources
+    ):
+        return {"executed": False, "reason": "fresh_enough"}
+
+    with _public_data_case_sync_lock:
+        now_locked = datetime.now(timezone.utc)
+        enabled_sources_locked = db.query(PublicDataSource).filter(PublicDataSource.enabled.is_(True)).all()
+        if not any(
+            _public_source_is_stale(
+                source,
+                now=now_locked,
+                min_freshness_minutes=PUBLIC_DATA_SYNC_CASE_MIN_FRESHNESS_MINUTES,
+            )
+            for source in enabled_sources_locked
+        ):
+            return {"executed": False, "reason": "already_synced_by_other_worker"}
+
+        started_at = datetime.now(timezone.utc)
+        results = sync_enabled_sources(db)
+        elapsed_ms = int((datetime.now(timezone.utc) - started_at).total_seconds() * 1000)
+        success_count = sum(1 for item in results if not item.errors)
+        error_count = sum(1 for item in results if item.errors)
+        logger.info(
+            "Upload-triggered public sync finished for case_id=%s: sources=%s success=%s error=%s elapsed_ms=%s",
+            case_id,
+            len(results),
+            success_count,
+            error_count,
+            elapsed_ms,
+        )
+        return {
+            "executed": True,
+            "source_count": len(results),
+            "success_count": success_count,
+            "error_count": error_count,
+            "elapsed_ms": elapsed_ms,
+        }
 
 
 def _parse_cors_origins(raw: str) -> List[str]:
@@ -455,6 +658,216 @@ def _normalize_score_100(value: Optional[float]) -> Optional[float]:
     return max(0.0, min(100.0, normalized))
 
 
+def _compact_process_digits(value: Optional[str]) -> str:
+    return re.sub(r"\D+", "", (value or "").strip())
+
+
+def _scores_all_zero(scores: CaseScoresPayload) -> bool:
+    return (
+        float(scores.success_probability) <= 0.0
+        and float(scores.settlement_probability) <= 0.0
+        and float(scores.expected_decision_months) <= 0.0
+        and float(scores.risk_score) <= 0.0
+        and float(scores.complexity_score) <= 0.0
+    )
+
+
+def _merge_scores_with_fallback(primary: CaseScoresPayload, fallback: CaseScoresPayload) -> CaseScoresPayload:
+    if _scores_all_zero(primary):
+        return fallback
+
+    ai_summary_primary = (primary.ai_summary or "").strip()
+    ai_summary_final = ai_summary_primary if ai_summary_primary else fallback.ai_summary
+    return CaseScoresPayload(
+        success_probability=float(primary.success_probability),
+        settlement_probability=float(primary.settlement_probability),
+        expected_decision_months=float(primary.expected_decision_months),
+        risk_score=float(primary.risk_score),
+        complexity_score=float(primary.complexity_score),
+        ai_summary=ai_summary_final,
+    )
+
+
+def _merge_extraction_with_fallback(primary: CaseExtractionPayload, fallback: CaseExtractionPayload) -> CaseExtractionPayload:
+    if fallback is None:
+        return primary
+
+    merged = primary.model_dump()
+    fallback_payload = fallback.model_dump()
+    simple_fields = [
+        "process_number",
+        "title",
+        "tribunal",
+        "judge",
+        "action_type",
+        "status",
+        "authority_display",
+    ]
+    for field in simple_fields:
+        current_val = merged.get(field)
+        if current_val in (None, ""):
+            merged[field] = fallback_payload.get(field)
+
+    current_claim = merged.get("claim_value")
+    if current_claim in (None, "", 0):
+        merged["claim_value"] = fallback_payload.get("claim_value")
+
+    current_key_facts = merged.get("key_facts")
+    if not isinstance(current_key_facts, list) or len([item for item in current_key_facts if str(item).strip()]) == 0:
+        merged["key_facts"] = fallback_payload.get("key_facts") or []
+
+    current_deadlines = merged.get("deadlines")
+    if not isinstance(current_deadlines, list) or len(current_deadlines) == 0:
+        merged["deadlines"] = fallback_payload.get("deadlines") or []
+
+    current_parties = merged.get("parties")
+    if not isinstance(current_parties, dict) or not current_parties:
+        merged["parties"] = fallback_payload.get("parties") or {}
+
+    return CaseExtractionPayload.model_validate(merged)
+
+
+def _build_public_context_for_case(
+    db: Session,
+    *,
+    process_number: Optional[str],
+    tribunal: Optional[str],
+    action_type: Optional[str],
+    limit: int = 8,
+) -> Dict[str, Any]:
+    target_process = (process_number or "").strip()
+    target_digits = _compact_process_digits(target_process)
+    tribunal_norm = (tribunal or "").strip().lower()
+    action_norm = (action_type or "").strip().lower()
+    candidate_limit = max(40, limit * 20)
+
+    query = db.query(PublicCaseRecord)
+    filters = []
+    if target_process:
+        filters.append(PublicCaseRecord.process_number == target_process)
+    if tribunal_norm:
+        filters.append(func.lower(func.coalesce(PublicCaseRecord.tribunal, "")) == tribunal_norm)
+    if action_norm:
+        filters.append(func.lower(func.coalesce(PublicCaseRecord.action_type, "")) == action_norm)
+    if filters:
+        query = query.filter(or_(*filters))
+
+    candidates = query.order_by(PublicCaseRecord.created_at.desc()).limit(candidate_limit).all()
+    if not candidates and target_digits:
+        candidates = (
+            db.query(PublicCaseRecord)
+            .filter(PublicCaseRecord.process_number.isnot(None))
+            .order_by(PublicCaseRecord.created_at.desc())
+            .limit(candidate_limit)
+            .all()
+        )
+
+    ranked: List[tuple[int, PublicCaseRecord]] = []
+    exact_matches = 0
+    same_tribunal = 0
+    same_action = 0
+    for item in candidates:
+        item_digits = _compact_process_digits(item.process_number)
+        item_tribunal = (item.tribunal or "").strip().lower()
+        item_action = (item.action_type or "").strip().lower()
+        is_exact = bool(target_digits) and bool(item_digits) and item_digits == target_digits
+        is_same_tribunal = bool(tribunal_norm) and item_tribunal == tribunal_norm
+        is_same_action = bool(action_norm) and item_action == action_norm
+        if is_exact:
+            exact_matches += 1
+        if is_same_tribunal:
+            same_tribunal += 1
+        if is_same_action:
+            same_action += 1
+        score = 0
+        if is_exact:
+            score += 100
+        if is_same_tribunal:
+            score += 25
+        if is_same_action:
+            score += 20
+        if item.is_success is not None:
+            score += 5
+        if item.duration_days is not None:
+            score += 5
+        ranked.append((score, item))
+
+    ranked.sort(
+        key=lambda pair: (
+            -pair[0],
+            pair[1].created_at or datetime.min.replace(tzinfo=timezone.utc),
+        ),
+    )
+    selected_records = [item for _, item in ranked[: max(1, int(limit))]]
+
+    success_values = [1.0 if row.is_success else 0.0 for row in selected_records if row.is_success is not None]
+    settlement_values = [1.0 if row.is_settlement else 0.0 for row in selected_records if row.is_settlement is not None]
+    duration_values = [(row.duration_days or 0) / 30.0 for row in selected_records if row.duration_days]
+
+    summary = {
+        "sample_size": len(selected_records),
+        "exact_process_matches": exact_matches,
+        "same_tribunal_matches": same_tribunal,
+        "same_action_type_matches": same_action,
+        "success_rate": round(sum(success_values) / len(success_values), 4) if success_values else None,
+        "settlement_rate": round(sum(settlement_values) / len(settlement_values), 4) if settlement_values else None,
+        "avg_duration_months": round(sum(duration_values) / len(duration_values), 2) if duration_values else None,
+    }
+
+    compact_records: List[Dict[str, Any]] = []
+    for row in selected_records:
+        compact_records.append(
+            {
+                "process_number": row.process_number,
+                "tribunal": row.tribunal,
+                "judge": row.judge,
+                "action_type": row.action_type,
+                "status": row.status,
+                "outcome": row.outcome,
+                "claim_value": row.claim_value,
+                "duration_days": row.duration_days,
+                "is_settlement": row.is_settlement,
+                "is_success": row.is_success,
+                "created_at": row.created_at.isoformat() if row.created_at else None,
+            },
+        )
+
+    return {"summary": summary, "records": compact_records}
+
+
+def _build_public_benchmark_note(summary: Dict[str, Any]) -> Optional[str]:
+    if not isinstance(summary, dict):
+        return None
+    sample_size = int(summary.get("sample_size") or 0)
+    if sample_size <= 0:
+        return None
+    exact = int(summary.get("exact_process_matches") or 0)
+    same_tribunal = int(summary.get("same_tribunal_matches") or 0)
+    same_action = int(summary.get("same_action_type_matches") or 0)
+
+    parts = [f"Benchmark público baseado em {sample_size} registro(s) sincronizado(s)"]
+    if exact > 0:
+        parts.append(f"{exact} com mesmo número de processo")
+    if same_tribunal > 0:
+        parts.append(f"{same_tribunal} do mesmo tribunal")
+    if same_action > 0:
+        parts.append(f"{same_action} do mesmo tipo de ação")
+
+    success_rate = summary.get("success_rate")
+    settlement_rate = summary.get("settlement_rate")
+    avg_duration = summary.get("avg_duration_months")
+    trailing = []
+    if isinstance(success_rate, (int, float)):
+        trailing.append(f"êxito médio de {round(float(success_rate) * 100)}%")
+    if isinstance(settlement_rate, (int, float)):
+        trailing.append(f"acordo médio de {round(float(settlement_rate) * 100)}%")
+    if isinstance(avg_duration, (int, float)):
+        trailing.append(f"duração média de {float(avg_duration):.1f} meses")
+    if trailing:
+        parts.append("com " + ", ".join(trailing))
+    return ". ".join(parts) + "."
+
+
 def _set_case_ai_progress(
     case: ProcessCase,
     *,
@@ -475,6 +888,12 @@ def _queue_case_ai_processing(db: Session, case: ProcessCase, reset_attempts: bo
     case.ai_last_error = None
     case.ai_next_retry_at = datetime.now(timezone.utc)
     case.ai_processed_at = None
+    case.public_sync_triggered = False
+    case.public_sync_status = None
+    case.public_sync_elapsed_ms = None
+    case.public_sync_source_count = None
+    case.public_sync_error_count = None
+    case.public_sync_at = None
     _set_case_ai_progress(
         case,
         stage=AI_STAGE_EXTRACTION,
@@ -688,6 +1107,12 @@ def _process_case_ai_enrichment(case_id: uuid_pkg.UUID) -> None:
                     ProcessCase.ai_attempts: (ProcessCase.ai_attempts + 1),
                     ProcessCase.ai_last_error: None,
                     ProcessCase.ai_next_retry_at: None,
+                    ProcessCase.public_sync_triggered: False,
+                    ProcessCase.public_sync_status: None,
+                    ProcessCase.public_sync_elapsed_ms: None,
+                    ProcessCase.public_sync_source_count: None,
+                    ProcessCase.public_sync_error_count: None,
+                    ProcessCase.public_sync_at: None,
                     ProcessCase.ai_stage: AI_STAGE_ANALYSIS,
                     ProcessCase.ai_stage_label: "Analisando documento com IA.",
                     ProcessCase.ai_progress_percent: 45,
@@ -719,6 +1144,72 @@ def _process_case_ai_enrichment(case_id: uuid_pkg.UUID) -> None:
         if not extracted_text:
             _set_case_ai_failure(db, case, "Texto do documento indisponível para análise.", retryable=False)
             return
+        if len(extracted_text) < CASE_AI_MIN_TEXT_CHARS:
+            _set_case_ai_failure(
+                db,
+                case,
+                (
+                    f"Texto extraído insuficiente para análise confiável "
+                    f"({len(extracted_text)} caracteres; mínimo recomendado: {CASE_AI_MIN_TEXT_CHARS})."
+                ),
+                retryable=False,
+            )
+            return
+
+        sync_result: Dict[str, Any] = {"executed": False, "reason": "disabled"}
+        if PUBLIC_DATA_SYNC_ON_CASE_PROCESSING:
+            _set_case_ai_progress(
+                case,
+                stage=AI_STAGE_ANALYSIS,
+                label="Sincronizando APIs externas antes da análise deste upload.",
+                percent=36,
+            )
+            db.commit()
+            try:
+                sync_result = _sync_public_data_before_case_analysis(db=db, case_id=case.id)
+            except Exception:  # noqa: BLE001
+                logger.exception("Falha ao sincronizar dados públicos antes da análise do case_id=%s.", case.id)
+                sync_result = {"executed": False, "reason": "sync_exception"}
+            if sync_result.get("executed"):
+                _set_case_ai_progress(
+                    case,
+                    stage=AI_STAGE_ANALYSIS,
+                    label=(
+                        "Bases externas sincronizadas para este upload "
+                        f"(fontes={sync_result.get('source_count', 0)}, falhas={sync_result.get('error_count', 0)})."
+                    ),
+                    percent=41,
+                )
+                db.commit()
+
+        sync_executed = bool(sync_result.get("executed"))
+        source_count = _to_non_negative_int(sync_result.get("source_count")) or 0
+        error_count = _to_non_negative_int(sync_result.get("error_count")) or 0
+        elapsed_ms = _to_non_negative_int(sync_result.get("elapsed_ms"))
+
+        case.public_sync_triggered = sync_executed
+        case.public_sync_elapsed_ms = elapsed_ms
+        case.public_sync_source_count = source_count if source_count > 0 else None
+        case.public_sync_error_count = error_count if source_count > 0 or error_count > 0 else None
+        case.public_sync_at = datetime.now(timezone.utc) if PUBLIC_DATA_SYNC_ON_CASE_PROCESSING else None
+        if sync_executed:
+            if error_count <= 0:
+                case.public_sync_status = "success"
+            elif source_count > 0 and error_count < source_count:
+                case.public_sync_status = "partial_error"
+            else:
+                case.public_sync_status = "error"
+        else:
+            case.public_sync_status = str(sync_result.get("reason") or "not_executed")[:120]
+        db.commit()
+
+        _set_case_ai_progress(
+            case,
+            stage=AI_STAGE_ANALYSIS,
+            label="Analisando documento com IA.",
+            percent=45,
+        )
+        db.commit()
 
         fallback_extraction = fallback_extract_case_data(
             text=extracted_text,
@@ -728,6 +1219,15 @@ def _process_case_ai_enrichment(case_id: uuid_pkg.UUID) -> None:
             action_type=case.action_type,
             claim_value=case.claim_value,
         )
+        fallback_scores = fallback_case_scores(extraction=fallback_extraction, text=extracted_text)
+        public_context = _build_public_context_for_case(
+            db=db,
+            process_number=fallback_extraction.process_number or case.process_number,
+            tribunal=fallback_extraction.tribunal or case.tribunal,
+            action_type=fallback_extraction.action_type or case.action_type,
+            limit=10,
+        )
+        public_benchmark_note = _build_public_benchmark_note(public_context.get("summary", {}))
 
         try:
             extraction, scores = analyze_case_with_ai(
@@ -743,15 +1243,21 @@ def _process_case_ai_enrichment(case_id: uuid_pkg.UUID) -> None:
                 user_id=case.user_id,
                 usage_operation="cases.async_enrichment.responses",
                 user_party=case.user_party if case.user_party in ("author", "defendant") else None,
+                public_context=public_context,
             )
         except Exception as exc:  # noqa: BLE001
             _set_case_ai_failure(db, case, f"Falha ao analisar caso com IA: {exc}", retryable=True)
             return
+        scores = _merge_scores_with_fallback(scores, fallback_scores)
+        if public_benchmark_note:
+            base_summary = (scores.ai_summary or "").strip()
+            merged_summary = f"{base_summary}\n\n{public_benchmark_note}" if base_summary else public_benchmark_note
+            scores = scores.model_copy(update={"ai_summary": merged_summary[:4000]})
 
         _set_case_ai_progress(
             case,
             stage=AI_STAGE_CROSS,
-            label="Cruzando resultados da IA com dados estruturados do processo.",
+            label="Cruzando resultados da IA com dados estruturados e benchmark público sincronizado.",
             percent=72,
         )
         db.commit()
@@ -767,9 +1273,7 @@ def _process_case_ai_enrichment(case_id: uuid_pkg.UUID) -> None:
         except Exception:
             case_embedding = None
 
-        final_extraction = extraction or fallback_extraction
-        if fallback_extraction and getattr(fallback_extraction, "authority_display", None):
-            final_extraction = final_extraction.model_copy(update={"authority_display": fallback_extraction.authority_display})
+        final_extraction = _merge_extraction_with_fallback(extraction, fallback_extraction)
         final_process_number = resolve_process_number(case.process_number, final_extraction.process_number)
 
         success_probability = _normalize_probability(scores.success_probability)
@@ -793,7 +1297,9 @@ def _process_case_ai_enrichment(case_id: uuid_pkg.UUID) -> None:
         case.action_type = final_extraction.action_type or case.action_type
         case.claim_value = final_extraction.claim_value or case.claim_value
         case.status = case.status or final_extraction.status or "em_andamento"
-        case.extracted_fields = final_extraction.model_dump(mode="json")
+        extracted_payload = final_extraction.model_dump(mode="json")
+        extracted_payload["public_benchmark"] = public_context.get("summary", {})
+        case.extracted_fields = extracted_payload
         case.ai_summary = (scores.ai_summary or "").strip()
         case.success_probability = success_probability
         case.settlement_probability = settlement_probability
@@ -1780,6 +2286,12 @@ async def upload_case(
         ai_last_error=None,
         ai_next_retry_at=datetime.now(timezone.utc),
         ai_processed_at=None,
+        public_sync_triggered=False,
+        public_sync_status=None,
+        public_sync_elapsed_ms=None,
+        public_sync_source_count=None,
+        public_sync_error_count=None,
+        public_sync_at=None,
         user_party=user_party_norm if user_party_norm in ("author", "defendant") else None,
     )
     db.add(case)
@@ -1975,6 +2487,241 @@ def sync_public_data(
 ) -> PublicDataSyncResponse:
     results = sync_enabled_sources(db)
     return PublicDataSyncResponse(results=results)
+
+
+@app.get("/api/public-data/ops", response_model=PublicDataOpsResponse)
+def get_public_data_ops(
+    days: int = Query(default=30, ge=1, le=365),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> PublicDataOpsResponse:
+    now = datetime.now(timezone.utc)
+    range_start = now - timedelta(days=days)
+    base_case_filters = [
+        ProcessCase.user_id == current_user.id,
+        ProcessCase.created_at >= range_start,
+    ]
+
+    uploads_total = int(db.query(func.count(ProcessCase.id)).filter(*base_case_filters).scalar() or 0)
+    completed_total = int(
+        db.query(func.count(ProcessCase.id))
+        .filter(*base_case_filters, ProcessCase.ai_status == AI_STATUS_COMPLETED)
+        .scalar()
+        or 0
+    )
+    processing_total = int(
+        db.query(func.count(ProcessCase.id))
+        .filter(*base_case_filters, ProcessCase.ai_status.in_([AI_STATUS_QUEUED, AI_STATUS_PROCESSING, AI_STATUS_FAILED_RETRYABLE]))
+        .scalar()
+        or 0
+    )
+    failed_total = int(
+        db.query(func.count(ProcessCase.id))
+        .filter(*base_case_filters, ProcessCase.ai_status.in_([AI_STATUS_FAILED, AI_STATUS_MANUAL_REVIEW]))
+        .scalar()
+        or 0
+    )
+    completed_rate_pct = round((completed_total / uploads_total) * 100, 2) if uploads_total > 0 else 0.0
+
+    total_duration_seconds_expr = func.extract("epoch", ProcessCase.ai_processed_at - ProcessCase.created_at)
+    avg_total_processing_seconds = _to_non_negative_float(
+        db.query(func.avg(total_duration_seconds_expr))
+        .filter(
+            *base_case_filters,
+            ProcessCase.ai_status == AI_STATUS_COMPLETED,
+            ProcessCase.ai_processed_at.isnot(None),
+        )
+        .scalar(),
+    )
+    avg_total_processing_seconds_with_sync = _to_non_negative_float(
+        db.query(func.avg(total_duration_seconds_expr))
+        .filter(
+            *base_case_filters,
+            ProcessCase.ai_status == AI_STATUS_COMPLETED,
+            ProcessCase.ai_processed_at.isnot(None),
+            ProcessCase.public_sync_triggered.is_(True),
+        )
+        .scalar(),
+    )
+    avg_total_processing_seconds_without_sync = _to_non_negative_float(
+        db.query(func.avg(total_duration_seconds_expr))
+        .filter(
+            *base_case_filters,
+            ProcessCase.ai_status == AI_STATUS_COMPLETED,
+            ProcessCase.ai_processed_at.isnot(None),
+            or_(ProcessCase.public_sync_triggered.is_(False), ProcessCase.public_sync_triggered.is_(None)),
+        )
+        .scalar(),
+    )
+
+    uploads_with_case_sync = int(
+        db.query(func.count(ProcessCase.id))
+        .filter(*base_case_filters, ProcessCase.public_sync_triggered.is_(True))
+        .scalar()
+        or 0
+    )
+    uploads_without_case_sync = int(
+        db.query(func.count(ProcessCase.id))
+        .filter(*base_case_filters, or_(ProcessCase.public_sync_triggered.is_(False), ProcessCase.public_sync_triggered.is_(None)))
+        .scalar()
+        or 0
+    )
+    case_sync_execution_rate_pct = round((uploads_with_case_sync / uploads_total) * 100, 2) if uploads_total > 0 else 0.0
+
+    sync_elapsed_rows = (
+        db.query(ProcessCase.public_sync_elapsed_ms)
+        .filter(
+            *base_case_filters,
+            ProcessCase.public_sync_triggered.is_(True),
+            ProcessCase.public_sync_elapsed_ms.isnot(None),
+        )
+        .all()
+    )
+    sync_elapsed_values = sorted(
+        float(item[0])
+        for item in sync_elapsed_rows
+        if _to_non_negative_float(item[0]) is not None
+    )
+    avg_case_sync_elapsed_ms = round((sum(sync_elapsed_values) / len(sync_elapsed_values)), 2) if sync_elapsed_values else None
+    p95_case_sync_elapsed_ms = _percentile_from_sorted(sync_elapsed_values, 95.0)
+    if p95_case_sync_elapsed_ms is not None:
+        p95_case_sync_elapsed_ms = round(p95_case_sync_elapsed_ms, 2)
+
+    source_stale_after_minutes = max(
+        10,
+        PUBLIC_DATA_SYNC_INTERVAL_MINUTES * 2,
+        PUBLIC_DATA_SYNC_CASE_MIN_FRESHNESS_MINUTES if PUBLIC_DATA_SYNC_CASE_MIN_FRESHNESS_MINUTES > 0 else 0,
+    )
+    sources = db.query(PublicDataSource).order_by(PublicDataSource.name.asc()).all()
+    source_items: List[PublicDataOpsSourceItem] = []
+    sources_enabled_total = 0
+    sources_last_success = 0
+    sources_last_error = 0
+    sources_stale = 0
+
+    for source in sources:
+        last_sync_utc = _as_utc(source.last_sync_at)
+        minutes_since_last_sync: Optional[int] = None
+        if last_sync_utc is not None:
+            minutes_since_last_sync = max(0, int((now - last_sync_utc).total_seconds() // 60))
+
+        is_stale = _public_source_is_stale_for_ops(
+            source,
+            now=now,
+            stale_after_minutes=source_stale_after_minutes,
+        )
+        source_items.append(
+            PublicDataOpsSourceItem(
+                name=source.name,
+                enabled=bool(source.enabled),
+                last_status=source.last_status,
+                last_error=source.last_error,
+                last_sync_at=source.last_sync_at,
+                minutes_since_last_sync=minutes_since_last_sync,
+                is_stale=is_stale,
+            ),
+        )
+
+        if not source.enabled:
+            continue
+        sources_enabled_total += 1
+        normalized_status = (source.last_status or "").strip().lower()
+        if normalized_status == "success":
+            sources_last_success += 1
+        if normalized_status not in {"", "success"} or bool((source.last_error or "").strip()):
+            sources_last_error += 1
+        if is_stale:
+            sources_stale += 1
+
+    usage_totals = (
+        db.query(
+            func.count(AIUsageLog.id),
+            func.coalesce(func.sum(AIUsageLog.total_tokens), 0),
+            func.coalesce(func.sum(AIUsageLog.estimated_cost_usd), 0.0),
+        )
+        .filter(
+            AIUsageLog.user_id == current_user.id,
+            AIUsageLog.created_at >= range_start,
+            AIUsageLog.operation.like("cases.async_enrichment%"),
+        )
+        .one()
+    )
+    usage_total_calls, usage_total_tokens, usage_total_cost = usage_totals
+
+    usage_operation_rows = (
+        db.query(
+            AIUsageLog.operation,
+            func.count(AIUsageLog.id),
+        )
+        .filter(
+            AIUsageLog.user_id == current_user.id,
+            AIUsageLog.created_at >= range_start,
+            AIUsageLog.operation.like("cases.async_enrichment%"),
+        )
+        .group_by(AIUsageLog.operation)
+        .all()
+    )
+    chunk_summary_calls = 0
+    responses_calls = 0
+    embeddings_calls = 0
+    for operation, calls in usage_operation_rows:
+        operation_name = str(operation or "")
+        call_count = int(calls or 0)
+        if operation_name == "cases.async_enrichment.responses":
+            responses_calls += call_count
+            continue
+        if operation_name == "cases.async_enrichment.embeddings":
+            embeddings_calls += call_count
+            continue
+        if operation_name.startswith("cases.async_enrichment.responses.chunk_summary"):
+            chunk_summary_calls += call_count
+            continue
+        if operation_name.startswith("cases.async_enrichment.chunk_summary"):
+            chunk_summary_calls += call_count
+
+    return PublicDataOpsResponse(
+        generated_at=now,
+        cases=PublicDataOpsCases(
+            period_days=days,
+            uploads_total=uploads_total,
+            completed_total=completed_total,
+            processing_total=processing_total,
+            failed_total=failed_total,
+            completed_rate_pct=completed_rate_pct,
+            avg_total_processing_seconds=round(avg_total_processing_seconds, 2)
+            if avg_total_processing_seconds is not None
+            else None,
+            avg_total_processing_seconds_with_sync=round(avg_total_processing_seconds_with_sync, 2)
+            if avg_total_processing_seconds_with_sync is not None
+            else None,
+            avg_total_processing_seconds_without_sync=round(avg_total_processing_seconds_without_sync, 2)
+            if avg_total_processing_seconds_without_sync is not None
+            else None,
+        ),
+        sync=PublicDataOpsSyncMetrics(
+            sync_on_case_processing_enabled=PUBLIC_DATA_SYNC_ON_CASE_PROCESSING,
+            case_sync_min_freshness_minutes=PUBLIC_DATA_SYNC_CASE_MIN_FRESHNESS_MINUTES,
+            uploads_with_case_sync=uploads_with_case_sync,
+            uploads_without_case_sync=uploads_without_case_sync,
+            case_sync_execution_rate_pct=case_sync_execution_rate_pct,
+            avg_case_sync_elapsed_ms=avg_case_sync_elapsed_ms,
+            p95_case_sync_elapsed_ms=p95_case_sync_elapsed_ms,
+            sources_enabled_total=sources_enabled_total,
+            sources_last_success=sources_last_success,
+            sources_last_error=sources_last_error,
+            sources_stale=sources_stale,
+        ),
+        ai_usage=PublicDataOpsAIUsage(
+            period_days=days,
+            total_calls=int(usage_total_calls or 0),
+            total_tokens=int(usage_total_tokens or 0),
+            total_cost_usd=round(float(usage_total_cost or 0.0), 6),
+            chunk_summary_calls=chunk_summary_calls,
+            responses_calls=responses_calls,
+            embeddings_calls=embeddings_calls,
+        ),
+        sources=source_items,
+    )
 
 
 @app.post("/api/public-data/records")
@@ -2261,6 +3008,7 @@ def on_startup() -> None:
         with SessionLocal() as db:
             ensure_default_public_sources(db)
         _start_strategic_alert_scheduler()
+        _start_public_data_scheduler()
         _start_ai_case_scheduler()
     except Exception as exc:  # noqa: BLE001
         raise RuntimeError(f"Falha ao inicializar Postgres/pgvector: {exc}") from exc
@@ -2269,4 +3017,5 @@ def on_startup() -> None:
 @app.on_event("shutdown")
 def on_shutdown() -> None:
     _stop_strategic_alert_scheduler()
+    _stop_public_data_scheduler()
     _stop_ai_case_scheduler()

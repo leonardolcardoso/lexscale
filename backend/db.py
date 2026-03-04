@@ -101,6 +101,24 @@ def init_database() -> None:
                 text("ALTER TABLE IF EXISTS process_cases ADD COLUMN IF NOT EXISTS ai_processed_at TIMESTAMPTZ"),
             )
             connection.execute(
+                text("ALTER TABLE IF EXISTS process_cases ADD COLUMN IF NOT EXISTS public_sync_triggered BOOLEAN"),
+            )
+            connection.execute(
+                text("ALTER TABLE IF EXISTS process_cases ADD COLUMN IF NOT EXISTS public_sync_status TEXT"),
+            )
+            connection.execute(
+                text("ALTER TABLE IF EXISTS process_cases ADD COLUMN IF NOT EXISTS public_sync_elapsed_ms INTEGER"),
+            )
+            connection.execute(
+                text("ALTER TABLE IF EXISTS process_cases ADD COLUMN IF NOT EXISTS public_sync_source_count INTEGER"),
+            )
+            connection.execute(
+                text("ALTER TABLE IF EXISTS process_cases ADD COLUMN IF NOT EXISTS public_sync_error_count INTEGER"),
+            )
+            connection.execute(
+                text("ALTER TABLE IF EXISTS process_cases ADD COLUMN IF NOT EXISTS public_sync_at TIMESTAMPTZ"),
+            )
+            connection.execute(
                 text("ALTER TABLE IF EXISTS process_cases ADD COLUMN IF NOT EXISTS authority_display TEXT"),
             )
             connection.execute(
@@ -118,6 +136,9 @@ def init_database() -> None:
                 )
                 connection.execute(
                     text("UPDATE process_cases SET ai_attempts = COALESCE(ai_attempts, 0)"),
+                )
+                connection.execute(
+                    text("UPDATE process_cases SET public_sync_triggered = COALESCE(public_sync_triggered, false)"),
                 )
                 connection.execute(
                     text(
@@ -139,6 +160,12 @@ def init_database() -> None:
             )
             connection.execute(
                 text("CREATE INDEX IF NOT EXISTS ix_process_cases_ai_next_retry_at ON process_cases (ai_next_retry_at)"),
+            )
+            connection.execute(
+                text("CREATE INDEX IF NOT EXISTS ix_process_cases_public_sync_triggered ON process_cases (public_sync_triggered)"),
+            )
+            connection.execute(
+                text("CREATE INDEX IF NOT EXISTS ix_process_cases_public_sync_status ON process_cases (public_sync_status)"),
             )
             connection.execute(
                 text("CREATE INDEX IF NOT EXISTS ix_process_cases_authority_display ON process_cases (authority_display)"),

@@ -55,6 +55,7 @@ npm run dev:backend
 - `GET /api/public-data/sources`
 - `POST /api/public-data/sources`
 - `POST /api/public-data/sync`
+- `GET /api/public-data/ops`
 - `POST /api/public-data/records`
 - `POST /api/ai/chat`
 - `GET /api/ai/history`
@@ -85,6 +86,36 @@ Configurações via ambiente:
 - `STRATEGIC_ALERT_COOLDOWN_OPPORTUNITY_MINUTES` (default: `240`)
 - `STRATEGIC_ALERT_COOLDOWN_INFO_MINUTES` (default: `360`)
 - `STRATEGIC_ALERT_SCAN_LOCK_KEY` (default: `91350231`, lock distribuído no Postgres)
+
+## Pipeline IA de Upload (cobertura completa do documento)
+
+O processamento assíncrono do upload agora pode operar em modo de cobertura completa:
+- o backend divide o documento em blocos e gera um mapa consolidado (map-reduce),
+- usa esse mapa na análise final para reduzir perda de contexto em arquivos longos,
+- cruza a análise com benchmark de dados públicos já sincronizados.
+
+Configurações:
+- `OPENAI_CASE_ANALYSIS_MODEL` (opcional; fallback para `OPENAI_MODEL`)
+- `CASE_AI_FULL_DOCUMENT_ENABLED` (default: `true`)
+- `CASE_AI_CHUNK_SIZE` (default: `14000`)
+- `CASE_AI_CHUNK_OVERLAP` (default: `1200`)
+- `CASE_AI_MAX_CHUNKS` (default: `8`)
+- `CASE_AI_TEMPERATURE` (default: `0`)
+- `CASE_AI_MAX_OUTPUT_TOKENS` (default: `2200`)
+- `CASE_AI_MIN_TEXT_CHARS` (default: `300`; abaixo disso o caso vai para revisão manual)
+
+## Scheduler de sincronização de bases públicas
+
+Além do botão manual (`POST /api/public-data/sync`), o backend roda sync automático recorrente.
+
+Configurações:
+- `PUBLIC_DATA_SYNC_INTERVAL_MINUTES` (default: `60`)
+- `PUBLIC_DATA_SYNC_RUN_ON_STARTUP` (default: `true`)
+- `PUBLIC_DATA_SYNC_ON_CASE_PROCESSING` (default: `true`; tenta sincronizar antes de cada análise de upload)
+- `PUBLIC_DATA_SYNC_CASE_MIN_FRESHNESS_MINUTES` (default: `0`; `0` força sync em todo upload, `>0` só sincroniza quando dados estiverem mais antigos que esse limite)
+
+Observabilidade operacional:
+- `GET /api/public-data/ops?days=30` retorna métricas de execução por upload (conclusão, sync por caso, p95 de sync), saúde das fontes e consumo de IA no pipeline assíncrono de enrichment.
 
 Inventário completo dos dados do dashboard:
 - `/Users/pedrobrugger/Projects/lexScale/repos/lexscale/docs/dashboard-data-inventory.md`

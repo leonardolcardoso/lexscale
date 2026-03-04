@@ -123,6 +123,12 @@ class ProcessCase(Base):
     ai_last_error = Column(Text, nullable=True)
     ai_next_retry_at = Column(DateTime(timezone=True), nullable=True, index=True)
     ai_processed_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    public_sync_triggered = Column(Boolean, nullable=False, default=False, index=True)
+    public_sync_status = Column(Text, nullable=True, index=True)
+    public_sync_elapsed_ms = Column(Integer, nullable=True)
+    public_sync_source_count = Column(Integer, nullable=True)
+    public_sync_error_count = Column(Integer, nullable=True)
+    public_sync_at = Column(DateTime(timezone=True), nullable=True)
     user_party = Column(Text, nullable=True)  # "author" | "defendant" (autor | réu)
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now(), index=True)
     updated_at = Column(

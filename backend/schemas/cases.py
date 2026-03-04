@@ -22,6 +22,7 @@ class CaseExtractionPayload(BaseModel):
     key_facts: List[str] = Field(default_factory=list)
     deadlines: List[DeadlinePayload] = Field(default_factory=list)
     authority_display: Optional[str] = None
+    public_benchmark: Optional[Dict[str, Any]] = None
 
 
 class CaseScoresPayload(BaseModel):
